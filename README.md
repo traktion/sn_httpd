@@ -25,18 +25,32 @@ rules. Access to Safe Network is purely on a read only basis too.
 
 ## Build Instructions
 
+### Linux Target
+
 It is recommended that the MUSL target is used to prevent runtime dependency issues.
 
 On Ubuntu:
 
 `sudo apt-get install musl-tools`
 
-Then add MUSL target:
+Then add target:
 
 `rustup target add x86_64-unknown-linux-musl`
-
-`rustup target add x86_64-unknown-linux-musl --toolchain=nightly`
 
 Then build release:
 
 `cargo build --release --target x86_64-unknown-linux-musl`
+
+### Windows Target
+
+On Ubuntu:
+
+`sudo apt-get install mingw-w64`
+
+Then add target:
+
+`rustup target add x86_64-pc-windows-gnu`
+
+Then build release:
+
+`cargo build --release --target x86_64-pc-windows-gnu`

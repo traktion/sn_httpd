@@ -54,3 +54,9 @@ Then add target:
 Then build release:
 
 `cargo build --release --target x86_64-pc-windows-gnu`
+
+### Run instructions
+
+`cargo run 127.0.0.1:8080 static /ip4/127.0.0.1/udp/59676/quic-v1/p2p/12D3KooWFyrDyLrzfejWeA2YmEWaST7oS7mfftuutTvuJwQ9mcpT`
+
+Where `/ip4/127.0.0.1/udp/59676/quic-v1/p2p/12D3KooWFyrDyLrzfejWeA2YmEWaST7oS7mfftuutTvuJwQ9mcpT` is a peer address.

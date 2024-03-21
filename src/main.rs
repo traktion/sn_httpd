@@ -1,4 +1,4 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error};
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, post, error};
 use actix_web::http::header::{CacheControl, CacheDirective};
 use actix_files::Files;
 use anyhow::{anyhow};
@@ -9,18 +9,25 @@ use std::env::args;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io::{Bytes, Empty};
+use std::{env, fs};
+use std::fs::{File,create_dir_all};
+use std::io::{Empty, Write};
 use std::path::PathBuf;
 use std::path::Path;
+use bytes::{Buf, Bytes};
 use async_stream::stream;
+use color_eyre::eyre::eyre;
 use tokio::sync::Mutex;
 use sn_client::transfers::bls::SecretKey;
 use sn_client::transfers::bls_secret_from_hex;
-use sn_client::{BATCH_SIZE, Client, ClientEvent, ClientEventsBroadcaster, ClientEventsReceiver, FilesApi, FilesDownload, FilesDownloadEvent};
+use sn_client::{BATCH_SIZE, Client, ClientEvent, ClientEventsBroadcaster, ClientEventsReceiver, FilesApi, FilesDownload, FilesDownloadEvent, FilesUpload};
 use sn_peers_acquisition::{get_peers_from_args, PeersArgs};
 use color_eyre::Result;
 use multiaddr::Multiaddr;
-use sn_client::protocol::storage::ChunkAddress;
+use sn_client::protocol::NetworkAddress;
+use sn_client::protocol::storage::{Chunk, ChunkAddress};
+use tempfile::{tempdir, tempfile};
+use futures::{StreamExt, TryStreamExt};
 
 const CLIENT_KEY: &str = "clientkey";
 
@@ -87,9 +94,7 @@ async fn main() -> std::io::Result<()> {
             //.service(get_account)
             .service(static_file)
             .route("/", web::get().to(angular_route))
-            .route("/{path1}/{path2}", web::get().to(angular_route))
-            .route("/{path1}/{path2}/{path3}", web::get().to(angular_route))
-            .route("/{path1}/{path2}/{path3}/{path4}", web::get().to(angular_route))
+            .route("/{path1}/{tail:.*}", web::get().to(angular_route))
             .service(Files::new("/static", app_config.static_dir.clone()))
             .app_data(web::Data::new(app_config.clone()))
             .app_data(web::Data::new(files_api.clone()))
@@ -143,7 +148,7 @@ async fn angular_route(app_config: web::Data<AppConfig>) -> Result<actix_files::
 
 #[get("/{static_file}")]
 async fn static_file(path: web::Path<String>, app_config: web::Data<AppConfig>) -> Result<actix_files::NamedFile, Error> {
-    info!("Route to angular file");
+    info!("Route to static file");
     Ok(actix_files::NamedFile::open(format!("{}/{}", app_config.static_dir, path.into_inner()))?)
 }
 
@@ -154,7 +159,7 @@ async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>
         Ok(data) => data,
         Err(err) => {
             error!("Failed to parse XOR string [{:?}]", err);
-            return HttpResponse::InternalServerError()
+            return HttpResponse::BadRequest()
                 .body(format!("Failed to parse XOR string [{:?}]", err))
         }
     };
@@ -223,6 +228,58 @@ async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>
         .streaming(data_stream)*/
 }
 
+#[post("/safe")]
+async fn post_safe_data(mut payload: web::Payload, app_config: web::Data<AppConfig>, files_api: web::Data<FilesApi>) -> Result<HttpResponse, Error> {
+    info!("Post file");
+    //let mut files_upload = FilesUpload::new(files_api.get_ref().clone());
+    let files_api = files_api.get_ref().clone();
+
+    info!("Creating temp file");
+    let temp_dir = tempdir()?;
+    let file_path = temp_dir.path().join("tempfile");
+    let mut file = File::create(&file_path)?;
+
+    info!("Writing temp file");
+    // todo: can we write directly to safe net from memory?
+    // Field in turn is stream of *Bytes* object
+    while let Some(chunk) = payload.next().await {
+        let data = chunk.unwrap();
+        // filesystem operations are blocking, we have to use threadpool
+        file = web::block(move || file.write_all(&data).map(|_| file))
+            .await
+            .unwrap()?;
+    }
+
+    info!("Creating chunk path");
+    let chunk_path = temp_dir.path().join("chunk_path");
+    create_dir_all(chunk_path.clone())?;
+
+    info!("Chunking file");
+    let (head_address, _data_map, _file_size, chunks_paths) =
+        FilesApi::chunk_file(&file_path, &chunk_path, true).expect("failed to chunk file");
+
+    info!("Paying for chunks");
+    let mut pay_chunks = Vec::new();
+    for (pay_chunk_name, _) in chunks_paths.clone() {
+        info!("Paying for chunk: {}", pay_chunk_name.to_string());
+        pay_chunks.push(pay_chunk_name.clone());
+    }
+    let payments = files_api.pay_for_chunks(pay_chunks)
+        .await.expect("failed to pay for chunks");
+    info!("payments: stored [{}], royalties [{}]", payments.storage_cost, payments.royalty_fees);
+
+    info!("Uploading chunks");
+    for (_chunk_name, chunk_path) in chunks_paths {
+        let chunk = Chunk::new(Bytes::from(fs::read(chunk_path)?));
+        files_api.get_local_payment_and_upload_chunk(chunk, false, None)
+            .await.expect("failed to get local payment and upload chunk")
+    }
+
+    info!("Successfully uploaded data at [{}]", head_address.to_hex());
+    Ok(HttpResponse::Ok()
+        .body(head_address.to_hex()))
+}
+
 fn calc_cache_max_age(safe_url: &String) -> u32 {
     31536000u32
     // todo: update when NRS (dynamic XOR URL lookup) is available
@@ -238,6 +295,7 @@ fn calc_cache_max_age(safe_url: &String) -> u32 {
     }*/
 }
 
+// todo: understand what I was trying to do here 3 years ago... :)
 /*#[get("/account/{xor}")]
 async fn get_account(path: web::Path<String>, app_config: web::Data<AppConfig>, accounts: web::Data<Mutex<Accounts>>, urls: web::Data<Mutex<Urls>>) -> impl Responder {
     let xor_str = path.into_inner();
@@ -397,6 +455,7 @@ fn get_client_data_dir_path() -> Result<PathBuf> {
     home_dirs.push("safe");
     home_dirs.push("client");
     std::fs::create_dir_all(home_dirs.as_path())?;
+    info!("home_dirs.as_path(): {}", home_dirs.to_str().unwrap());
     Ok(home_dirs)
 }
 

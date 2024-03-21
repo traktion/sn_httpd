@@ -91,6 +91,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(logger)
             .service(get_safe_data)
+            .service(post_safe_data)
             //.service(get_account)
             .service(static_file)
             .route("/", web::get().to(angular_route))

@@ -20,7 +20,7 @@ use color_eyre::eyre::eyre;
 use tokio::sync::Mutex;
 use sn_client::transfers::bls::SecretKey;
 use sn_client::transfers::bls_secret_from_hex;
-use sn_client::{BATCH_SIZE, Client, ClientEvent, ClientEventsBroadcaster, ClientEventsReceiver, FilesApi, FilesDownload, FilesDownloadEvent, FilesUpload};
+use sn_client::{BATCH_SIZE, Client, ClientEvent, ClientEventsBroadcaster, ClientEventsReceiver, FilesApi, FilesDownload, FilesDownloadEvent};
 use sn_peers_acquisition::{get_peers_from_args, PeersArgs};
 use color_eyre::Result;
 use multiaddr::Multiaddr;
@@ -425,7 +425,6 @@ async fn safe_connect(peer: &Multiaddr) -> Result<Client>  {
     let result = Client::new(
         secret_key,
         bootstrap_peers,
-        true, // todo: optimise
         None,
         Some(broadcaster),
     ).await?;

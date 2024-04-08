@@ -3,7 +3,7 @@ use actix_web::http::header::{CacheControl, CacheDirective};
 use actix_files::Files;
 use anyhow::{anyhow};
 use xor_name::XorName;
-use log::{info, error, warn};
+use log::{info, error, warn, debug};
 use std::net::SocketAddr;
 use std::env::args;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ use sn_client::protocol::NetworkAddress;
 use sn_client::protocol::storage::{Chunk, ChunkAddress};
 use tempfile::{tempdir, tempfile};
 use futures::{StreamExt, TryStreamExt};
+use sn_client::registers::RegisterAddress;
+use sn_transfers::bls::PublicKey;
 
 const CLIENT_KEY: &str = "clientkey";
 
@@ -99,6 +101,7 @@ async fn main() -> std::io::Result<()> {
             .service(Files::new("/static", app_config.static_dir.clone()))
             .app_data(web::Data::new(app_config.clone()))
             .app_data(web::Data::new(files_api.clone()))
+            .app_data(web::Data::new(client.clone()))
             //.app_data(accounts.clone())
             //.app_data(urls.clone())
     })
@@ -154,18 +157,40 @@ async fn static_file(path: web::Path<String>, app_config: web::Data<AppConfig>) 
 }
 
 #[get("/safe/{xor}")]
-async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>, files_api: web::Data<FilesApi>) -> impl Responder {
-    let xor_str = path.into_inner();
-    let xor_name = match str_to_xor_name(&xor_str) {
-        Ok(data) => data,
-        Err(err) => {
-            error!("Failed to parse XOR string [{:?}]", err);
-            return HttpResponse::BadRequest()
-                .body(format!("Failed to parse XOR string [{:?}]", err))
+async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>, files_api: web::Data<FilesApi>, client: web::Data<Client>) -> impl Responder {
+    let chunk_address = path.into_inner();
+
+    let xor_name = if is_xor(&chunk_address) {
+        // use the XOR address directly
+        match str_to_xor_name(&chunk_address) {
+            Ok(data) => data,
+            Err(err) => {
+                error!("Failed to parse XOR string [{:?}]", err);
+                return HttpResponse::BadRequest()
+                    .body(format!("Failed to parse XOR string [{:?}]", err))
+            }
+        }
+    } else {
+        // get current XOR address from the register
+        let client = client.get_ref().clone();
+        match get_registers(chunk_address.clone(), false, &client).await {
+            Ok(data) => match str_to_xor_name(&data) {
+                Ok(data) => data,
+                Err(err) => {
+                    error!("Failed to parse register value as XOR string [{:?}]", err);
+                    return HttpResponse::BadRequest()
+                        .body(format!("Failed to parse register value as XOR string [{:?}]", err))
+                }
+            }
+            Err(err) => {
+                error!("Failed to get register key [{:?}]", err);
+                return HttpResponse::BadRequest()
+                    .body(format!("Failed to get register key [{:?}]", err))
+            }
         }
     };
 
-    let safe_url = format!("safe://{}", xor_str);
+    let safe_url = format!("safe://{}", chunk_address);
 
     // todo: implement funding
     /*if !urls.lock().await.urls.contains_key(&safe_url) {
@@ -279,21 +304,6 @@ async fn post_safe_data(mut payload: web::Payload, app_config: web::Data<AppConf
     info!("Successfully uploaded data at [{}]", head_address.to_hex());
     Ok(HttpResponse::Ok()
         .body(head_address.to_hex()))
-}
-
-fn calc_cache_max_age(safe_url: &String) -> u32 {
-    31536000u32
-    // todo: update when NRS (dynamic XOR URL lookup) is available
-    /*return match SafeUrl::from_xorurl(&safe_url) {
-        Ok(_) => {
-            info!("URL is XOR URL (treat as immutable): [{}]", safe_url);
-            31536000u32 // cache 'forever'
-        },
-        Err(_) => {
-            info!("URL is NRS URL (treat as mutable): [{}]", safe_url);
-            30 // only cache for 30s
-        }
-    }*/
 }
 
 // todo: understand what I was trying to do here 3 years ago... :)
@@ -471,4 +481,60 @@ fn str_to_xor_name(str: &String) -> Result<XorName> {
         .try_into()
         .expect("Failed to parse XorName from hex string");
     Ok(XorName(xor_name_bytes))
+}
+
+fn is_xor(safe_url: &String) -> bool {
+    // todo: update when NRS (dynamic XOR URL lookup) is available
+    return safe_url.len() == 64
+}
+
+fn calc_cache_max_age(safe_url: &String) -> u32 {
+    // todo: update when NRS (dynamic XOR URL lookup) is available
+    return if is_xor(safe_url) {
+        info!("URL is XOR URL (treat as immutable): [{}]", safe_url);
+        31536000u32 // cache 'forever'
+    } else {
+        info!("URL is register URL (treat as mutable): [{}]", safe_url);
+        30 // only cache for 30s
+    }
+}
+
+async fn get_registers(addr: String, use_name: bool, client: &Client) -> Result<String> {
+    let (address, printing_name) = parse_addr(&addr, use_name, client.signer_pk())?;
+
+    println!("Trying to retrieve Register {printing_name}");
+
+    match client.get_register(address).await {
+        Ok(register) => {
+            println!("Successfully retrieved Register {printing_name}");
+            let entries = register.read();
+            println!("Register entries:");
+            let (_, bytes) = entries.last().expect("No entries!");
+            let data_str = String::from_utf8(bytes.clone()).unwrap_or_else(|_| format!("{bytes:?}"));
+            Ok(data_str)
+        }
+        Err(error) => {
+            println!(
+                "Did not retrieve Register {printing_name} from all nodes in the close group! {error}"
+            );
+            return Err(error.into());
+        }
+    }
+}
+
+fn parse_addr(
+    address_str: &str,
+    use_name: bool,
+    pk: PublicKey,
+) -> Result<(RegisterAddress, String)> {
+    if use_name {
+        debug!("Parsing address as name");
+        let user_metadata = XorName::from_content(address_str.as_bytes());
+        let addr = RegisterAddress::new(user_metadata, pk);
+        Ok((addr, format!("'{address_str}' at {addr}")))
+    } else {
+        debug!("Parsing address as hex");
+        let addr = RegisterAddress::from_hex(address_str).expect("Could not parse hex string");
+        Ok((addr, format!("at {address_str}")))
+    }
 }

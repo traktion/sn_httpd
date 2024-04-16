@@ -4116,18 +4116,18 @@ checksum = "e6ecd384b10a64542d77071bd64bd7b231f4ed5940fba55e98c3de13824cf3d7"
 
 [[package]]
 name = "sn_build_info"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b11f1dd775e8112b5767c31a831188624abfcd303631eb51a4a151c0dc1a23"
+checksum = "1b8a3a098cc6fdd0a49e2de921634c84a2cf083a84d89c3cc33ae9bcc1b28e6d"
 dependencies = [
  "vergen",
 ]
 
 [[package]]
 name = "sn_client"
-version = "0.105.2"
+version = "0.105.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ecf001e59e3be5fff0c8dc26d4fe34e37268ba347115992aace609d09bda135"
+checksum = "4dedafe241ebfafdca7c6c6e4655b9d638090cfa0272f0c8e188da2c64d20ca2"
 dependencies = [
  "async-trait",
  "backoff",
@@ -4221,9 +4221,9 @@ dependencies = [
 
 [[package]]
 name = "sn_networking"
-version = "0.14.1"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6a140306aa6c4246686eb8f1a4a5e80d475a0a20be5f45fd5628584ad89bfb2"
+checksum = "87961fc137cbb46028ec0c8cf930e225eca3a2f324e0208c9d4a16d6764c9b25"
 dependencies = [
  "aes-gcm-siv",
  "async-trait",
@@ -4242,6 +4242,7 @@ dependencies = [
  "sn_protocol",
  "sn_registers",
  "sn_transfers",
+ "strum 0.26.2",
  "thiserror",
  "tiny-keccak",
  "tokio",
@@ -4254,9 +4255,9 @@ dependencies = [
 
 [[package]]
 name = "sn_node"
-version = "0.105.3"
+version = "0.105.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14b6524b3b7d70bd21b79b32359b2f28f20def60e656362c16dd16f04936db21"
+checksum = "a6a8acb7bb32f998ed1eb91cf8d55f7c0358e9a706c177f4a59596689b5288f8"
 dependencies = [
  "assert_fs",
  "async-trait",
@@ -4290,7 +4291,7 @@ dependencies = [
  "sn_registers",
  "sn_service_management",
  "sn_transfers",
- "strum",
+ "strum 0.25.0",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -4304,22 +4305,24 @@ dependencies = [
 
 [[package]]
 name = "sn_peers_acquisition"
-version = "0.2.8"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a84f7c2e181eeb61cfa0df34fe3ee8af70c705b51143a151949483a700e714ce"
+checksum = "4cf74ae2c5700a6cf8fb0c924ebff597e52759c279146d8b87544159b42ea87b"
 dependencies = [
  "clap",
+ "lazy_static",
  "libp2p",
  "rand",
+ "sn_protocol",
  "thiserror",
  "tracing",
 ]
 
 [[package]]
 name = "sn_protocol"
-version = "0.16.1"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a88a47e862ffcad33b37c76b4630f30ba50e6b4f6e6f400b248fe9030a4cd90"
+checksum = "e4775455cbde74b36e08d638b75c6d69bce9334127301e23a9d9c2fc0be3f564"
 dependencies = [
  "blsttc",
  "bytes",
@@ -4328,12 +4331,14 @@ dependencies = [
  "custom_debug",
  "dirs-next",
  "hex",
+ "lazy_static",
  "libp2p",
  "prost",
  "rmp-serde",
  "serde",
  "serde_json",
  "sha2",
+ "sn_build_info",
  "sn_registers",
  "sn_transfers",
  "thiserror",
@@ -4362,9 +4367,9 @@ dependencies = [
 
 [[package]]
 name = "sn_service_management"
-version = "0.2.1"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14be7b57fe41fe47aa290803cf48865cc2426f1310326714f5fb0e9c77848536"
+checksum = "b3065807fa637d754e3f8768b4fa445419a42876bde88eefa07a0a3c264d54ad"
 dependencies = [
  "async-trait",
  "dirs-next",
@@ -4387,9 +4392,9 @@ dependencies = [
 
 [[package]]
 name = "sn_transfers"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cf85c3c5c08a03b30da843267fca5b2724ba38db135518ebe33d93f454bd6a1"
+checksum = "c49cf3e92254a820fb522eb788eab1f3019699cba0b1bff5c9c2e72fa331a2f0"
 dependencies = [
  "blsttc",
  "custom_debug",
@@ -4397,6 +4402,7 @@ dependencies = [
  "fs2",
  "hex",
  "lazy_static",
+ "libp2p",
  "rand",
  "rayon",
  "rmp-serde",
@@ -4491,7 +4497,16 @@ version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290d54ea6f91c969195bdbcd7442c8c2a2ba87da8bf60a7ee86a235d4bc1e125"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.25.3",
+]
+
+[[package]]
+name = "strum"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d8cec3501a5194c432b2b7976db6b7d10ec95c253208b45f83f7136aa985e29"
+dependencies = [
+ "strum_macros 0.26.2",
 ]
 
 [[package]]
@@ -4499,6 +4514,19 @@ name = "strum_macros"
 version = "0.25.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23dc1fa9ac9c169a78ba62f0b841814b7abae11bdd047b9c58f893439e309ea0"
+dependencies = [
+ "heck 0.4.1",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 2.0.52",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6cf59daf282c0a494ba14fd21610a0325f9f90ec9d1231dea26bcb1d696c946"
 dependencies = [
  "heck 0.4.1",
  "proc-macro2",

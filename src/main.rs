@@ -1,37 +1,36 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, post, error};
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, post};
 use actix_web::http::header::{CacheControl, CacheDirective};
 use actix_files::Files;
 use anyhow::{anyhow};
 use xor_name::XorName;
-use log::{info, error, warn, debug};
+use log::{info, error, debug};
 use std::net::SocketAddr;
 use std::env::args;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::{env, fs};
 use std::fs::{File,create_dir_all};
-use std::io::{Empty, Write};
+use std::io::{Write};
 use std::path::PathBuf;
 use std::path::Path;
-use bytes::{Buf, Bytes};
+use actix_web::web::Data;
+use bytes::{Bytes};
 use async_stream::stream;
-use color_eyre::eyre::eyre;
-use tokio::sync::Mutex;
 use sn_client::transfers::bls::SecretKey;
 use sn_client::transfers::bls_secret_from_hex;
-use sn_client::{BATCH_SIZE, Client, ClientEvent, ClientEventsBroadcaster, ClientEventsReceiver, FilesApi, FilesDownload, FilesDownloadEvent};
+use sn_client::{Client, ClientEventsBroadcaster, FilesApi, FilesDownload};
 use sn_peers_acquisition::{get_peers_from_args, PeersArgs};
-use color_eyre::Result;
+use color_eyre::{Result};
 use multiaddr::Multiaddr;
-use sn_client::protocol::NetworkAddress;
 use sn_client::protocol::storage::{Chunk, ChunkAddress};
-use tempfile::{tempdir, tempfile};
-use futures::{StreamExt, TryStreamExt};
+use tempfile::{tempdir};
+use futures::{StreamExt};
 use sn_client::registers::RegisterAddress;
 use sn_transfers::bls::PublicKey;
 
 const CLIENT_KEY: &str = "clientkey";
+const DNS1: &str = "6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dd8f1cddbfbd2d975b19912dfd01e3c02077470177455a47814002d5a0f30e886720cc892a3b31f69bf4dae3d2d455fe21";
+const STREAM_CHUNK_SIZE: usize = 524288;
 
 #[derive(Clone)]
 struct AppConfig {
@@ -40,24 +39,24 @@ struct AppConfig {
     network_peer_addr: Multiaddr,
 }
 
-#[derive(Clone, Default)]
+/*#[derive(Clone, Default)]
 struct Accounts {
     accounts: HashMap<String, Site>
-}
+}*/
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 struct Site {
     configurl: String,
     keyxorurl: String,
     //keypair: Keypair,
     credit: i64,
     usage: i64
-}
+}*/
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 struct Urls {
     urls: HashMap<String, Site>
-}
+}*/
 
 #[derive(Serialize, Deserialize)]
 struct Config {
@@ -68,19 +67,12 @@ struct Config {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "info"); // todo: take from env variable (ignoring currently!)
-    std::env::set_var("RUST_BACKTRACE", "1");
+    env::set_var("RUST_LOG", "info"); // todo: take from env variable (ignoring currently!)
+    env::set_var("RUST_BACKTRACE", "1");
     env_logger::init();
 
     let app_config = read_args().expect("Failed to read CLI arguments");
     let bind_socket_addr = app_config.bind_socket_addr;
-
-    /*let accounts = web::Data::new(Mutex::from(Accounts {
-        accounts: HashMap::new()
-    }));
-    let urls = web::Data::new(Mutex::from(Urls {
-        urls: HashMap::new()
-    }));*/
 
     // initialise safe network connection and files api
     let client = safe_connect(&app_config.network_peer_addr).await.expect("Failed to connect to Safe Network");
@@ -92,18 +84,16 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(logger)
-            .service(get_safe_data)
+            .service(get_safe_data_stream)
             .service(post_safe_data)
             //.service(get_account)
             .service(static_file)
             .route("/", web::get().to(angular_route))
             .route("/{path1}/{tail:.*}", web::get().to(angular_route))
             .service(Files::new("/static", app_config.static_dir.clone()))
-            .app_data(web::Data::new(app_config.clone()))
-            .app_data(web::Data::new(files_api.clone()))
-            .app_data(web::Data::new(client.clone()))
-            //.app_data(accounts.clone())
-            //.app_data(urls.clone())
+            .app_data(Data::new(app_config.clone()))
+            .app_data(Data::new(files_api.clone()))
+            .app_data(Data::new(client.clone()))
     })
         .bind(bind_socket_addr)?
         .run()
@@ -151,94 +141,45 @@ async fn angular_route(app_config: web::Data<AppConfig>) -> Result<actix_files::
 }
 
 #[get("/{static_file}")]
-async fn static_file(path: web::Path<String>, app_config: web::Data<AppConfig>) -> Result<actix_files::NamedFile, Error> {
+async fn static_file(path: web::Path<String>, app_config: Data<AppConfig>) -> Result<actix_files::NamedFile, Error> {
     info!("Route to static file");
     Ok(actix_files::NamedFile::open(format!("{}/{}", app_config.static_dir, path.into_inner()))?)
 }
 
 #[get("/safe/{xor}")]
-async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>, files_api: web::Data<FilesApi>, client: web::Data<Client>) -> impl Responder {
+async fn get_safe_data_stream(path: web::Path<String>, files_api: Data<FilesApi>, client: Data<Client>) -> impl Responder {
     let chunk_address = path.into_inner();
 
-    let xor_name = if is_xor(&chunk_address) {
-        // use the XOR address directly
-        match str_to_xor_name(&chunk_address) {
-            Ok(data) => data,
-            Err(err) => {
-                error!("Failed to parse XOR string [{:?}]", err);
-                return HttpResponse::BadRequest()
-                    .body(format!("Failed to parse XOR string [{:?}]", err))
-            }
-        }
-    } else {
-        // get current XOR address from the register
-        let client = client.get_ref().clone();
-        match get_registers(chunk_address.clone(), false, &client).await {
-            Ok(data) => match str_to_xor_name(&data) {
-                Ok(data) => data,
-                Err(err) => {
-                    error!("Failed to parse register value as XOR string [{:?}]", err);
-                    return HttpResponse::BadRequest()
-                        .body(format!("Failed to parse register value as XOR string [{:?}]", err))
-                }
-            }
-            Err(err) => {
-                error!("Failed to get register key [{:?}]", err);
-                return HttpResponse::BadRequest()
-                    .body(format!("Failed to get register key [{:?}]", err))
-            }
-        }
+    let xor_name = match resolve_xor_name(client, &chunk_address).await {
+        Ok(value) => value,
+        Err(err) => return HttpResponse::BadRequest()
+            .body(format!("Invalid register or XOR address [{:?}]", err)),
     };
-
-    let safe_url = format!("safe://{}", chunk_address);
-
-    // todo: implement funding
-    /*if !urls.lock().await.urls.contains_key(&safe_url) {
-        error!("Funding account has not been created for XOR URL: [{}]", safe_url);
-        return HttpResponse::PaymentRequired()
-            .body(format!("Funding account has not been created for XOR URL: [{}]", safe_url))
-    }
-    if let Some(site) = urls.lock().await.urls.get(&safe_url) {
-        if site.credit > 0 {
-            error!("Insufficient funding on account to retrieve XOR URL: [{}]", safe_url);
-            return HttpResponse::PaymentRequired()
-                .body(format!("Insufficient funding on account to retrieve XOR URL: [{}]", safe_url))
-        }
-    }*/
 
     let mut files_download = FilesDownload::new(files_api.get_ref().clone());
 
-    return match files_download.download_from(ChunkAddress::new(xor_name), 0, usize::MAX).await {
-        Ok(data) => {
-            info!("Successfully retrieved data at [{}]", safe_url);
-            HttpResponse::Ok()
-                .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&safe_url))]))
-                .body(data)
-        }
-        Err(err) => {
-            warn!("Failed to retrieve data at [{}]: {:?}", safe_url, err);
-            HttpResponse::NotFound()
-                .body(format!("Failed to retrieve data at [{}]: {:?}", safe_url, err))
-        }
-    }
-
-    // experimental - instead of downloading to memory, then sending, can we stream parts of the file?
-
-    // todo: get events
-    //let mut download_events_rx = files_download.get_events();
-
-    /*let mut position = 0;
-    let length = 1024 * 1024;
+    let mut chunk_count = 0;
+    let mut position = 0;
+    #[allow(unused_assignments)]
+    let mut bytes_read = 0;
     let data_stream = stream! {
         loop {
-            match files_download.download_from(ChunkAddress::new(xor_name), position, length).await {
+            // todo: There is a position/length bug here when using smaller lengths. I've seen
+            //       unexplained duplicate bytes between data chunks returned. Need investigating,
+            //       but a length >= block size should avoid splitting blocks and exposing the issue.
+            match files_download.download_from(ChunkAddress::new(xor_name), position, STREAM_CHUNK_SIZE).await {
                 Ok(data) => {
-                    /*if data == Empty {
-                        break;
-                    }*/
-                    info!("Read bytes from file position {}", position);
-                    position = position + length;
+                    chunk_count += 1;
+                    bytes_read = data.len();
+                    info!("Read [{}] bytes from file position [{}]", bytes_read, position);
                     yield Ok(data); // Yielding the chunk here
+                    if bytes_read < STREAM_CHUNK_SIZE {
+                        // If the last data chunk returned is smaller than the stream chunk size
+                        // it indicates it is the last chunk in the sequence
+                        info!("Last chunk [{}] read - breaking", chunk_count);
+                        break;
+                    }
+                    position += STREAM_CHUNK_SIZE;
                 }
                 Err(e) => {
                     error!("Error reading file: {}", e);
@@ -249,15 +190,17 @@ async fn get_safe_data(path: web::Path<String>, app_config: web::Data<AppConfig>
         }
     };
 
+    // todo: When there is only 1 known chunk, we could use body (with 'content-length: x') instead of
+    //       streaming (with 'transfer-encoding: chunked') to improve performance.
     HttpResponse::Ok()
-        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&safe_url))]))
-        .streaming(data_stream)*/
+        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address))]))
+        .streaming(data_stream)
+    // todo: When the XOR address is not fonud, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
 }
 
 #[post("/safe")]
-async fn post_safe_data(mut payload: web::Payload, app_config: web::Data<AppConfig>, files_api: web::Data<FilesApi>) -> Result<HttpResponse, Error> {
+async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) -> Result<HttpResponse, Error> {
     info!("Post file");
-    //let mut files_upload = FilesUpload::new(files_api.get_ref().clone());
     let files_api = files_api.get_ref().clone();
 
     info!("Creating temp file");
@@ -469,6 +412,27 @@ fn get_client_data_dir_path() -> Result<PathBuf> {
     Ok(home_dirs)
 }
 
+async fn resolve_xor_name(client: Data<Client>, chunk_address: &String) -> Result<XorName> {
+    let xor_name = if is_xor(&chunk_address) {
+        // use the XOR address directly
+        match str_to_xor_name(&chunk_address) {
+            Ok(data) => data,
+            Err(err) => return Err(err)
+        }
+    } else {
+        // get current XOR address from the register
+        let client = client.get_ref().clone();
+        match resolve_addr(chunk_address.clone(), false, &client).await {
+            Ok(data) => match str_to_xor_name(&data) {
+                Ok(data) => data,
+                Err(err) => return Err(err)
+            }
+            Err(err) => return Err(err)
+        }
+    };
+    Ok(xor_name)
+}
+
 fn str_to_xor_name(str: &String) -> Result<XorName> {
     let path = Path::new(str);
     let hex_xorname = path
@@ -499,23 +463,47 @@ fn calc_cache_max_age(safe_url: &String) -> u32 {
     }
 }
 
-async fn get_registers(addr: String, use_name: bool, client: &Client) -> Result<String> {
-    let (address, printing_name) = parse_addr(&addr, use_name, client.signer_pk())?;
+async fn resolve_addr(addr: String, use_name: bool, client: &Client) -> Result<String> {
+    let (address, printing_name) = parse_addr(DNS1, use_name, client.signer_pk())?;
 
-    println!("Trying to retrieve Register {printing_name}");
+    info!("Trying to retrieve DNS register [{}]", printing_name);
 
     match client.get_register(address).await {
         Ok(register) => {
-            println!("Successfully retrieved Register {printing_name}");
-            let entries = register.read();
-            println!("Register entries:");
-            let (_, bytes) = entries.last().expect("No entries!");
-            let data_str = String::from_utf8(bytes.clone()).unwrap_or_else(|_| format!("{bytes:?}"));
-            Ok(data_str)
+            info!("Successfully retrieved DNS register [{}]", printing_name);
+
+            let entries = register.clone().read();
+
+            // print all entries
+            for entry in entries.clone() {
+                let (hash, entry_data) = entry.clone();
+                let data_str = String::from_utf8(entry_data.clone()).unwrap_or_else(|_| format!("{entry_data:?}"));
+                info!("Entry - hash [{}], data: [{}]", hash, data_str);
+
+                let Some((name, data)) = data_str.split_once(',') else { continue };
+                if name == addr {
+                    info!("Found DNS entry - name [{}], data: [{}]", name, data);
+                    let (dns_address, _) = parse_addr(&data, false, client.signer_pk())?;
+                    match client.get_register(dns_address).await {
+                        Ok(site_register) => {
+                            let entry = site_register.clone().read();
+                            let (_, site_entry_data) = entry.last().expect("Failed to retrieve latest site register entry");
+                            let site_data_str = String::from_utf8(site_entry_data.clone()).unwrap_or_else(|_| format!("{site_entry_data:?}"));
+                            return Ok(site_data_str);
+                        },
+                        Err(_) => {
+                            continue
+                        }
+                    }
+                }
+            }
+            info!("Did not find DNS entry for [{}]", addr);
+            Ok(addr.to_string())
         }
         Err(error) => {
-            println!(
-                "Did not retrieve Register {printing_name} from all nodes in the close group! {error}"
+            info!(
+                "Did not retrieve DNS register [{}] with error [{}]",
+                printing_name, error
             );
             return Err(error.into());
         }

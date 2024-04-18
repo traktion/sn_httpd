@@ -1,4 +1,4 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, post};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error};
 use actix_web::http::header::{CacheControl, CacheDirective};
 use actix_files::Files;
 use anyhow::{anyhow};
@@ -141,7 +141,7 @@ fn read_args() -> Result<AppConfig> {
 }
 
 async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>) -> impl Responder {
-    let (config_addr, mut relative_path) = path.into_inner();
+    let (config_addr, relative_path) = path.into_inner();
     let files_api = files_api_data.get_ref();
     let client = client_data.get_ref();
 

@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 use std::env::args;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
-use std::{env, fs};
+use std::{fs};
+use std::collections::HashMap;
 use std::fs::{File,create_dir_all};
 use std::io::{Write};
 use std::path::PathBuf;
@@ -25,12 +26,14 @@ use multiaddr::Multiaddr;
 use sn_client::protocol::storage::{Chunk, ChunkAddress};
 use tempfile::{tempdir};
 use futures::{StreamExt};
+use globset::{Glob};
 use sn_client::registers::RegisterAddress;
 use sn_transfers::bls::PublicKey;
 
 const CLIENT_KEY: &str = "clientkey";
 const DNS1: &str = "6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dd8f1cddbfbd2d975b19912dfd01e3c02077470177455a47814002d5a0f30e886720cc892a3b31f69bf4dae3d2d455fe21";
-const STREAM_CHUNK_SIZE: usize = 524288;
+const STREAM_CHUNK_SIZE: usize = 2048 * 1024;
+const SAFE_PATH: &str = "safe";
 
 #[derive(Clone)]
 struct AppConfig {
@@ -58,18 +61,22 @@ struct Urls {
     urls: HashMap<String, Site>
 }*/
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Config {
-    name: String,
-    urls: Vec<String>,
-    assets: Vec<String>
+    file_map: HashMap<String, String>,
+    route_map: HashMap<String, String>
+}
+impl Default for Config {
+    fn default () -> Config {
+        Config{file_map: HashMap::new(), route_map: HashMap::new()}
+    }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env::set_var("RUST_LOG", "info"); // todo: take from env variable (ignoring currently!)
-    env::set_var("RUST_BACKTRACE", "1");
-    env_logger::init();
+    // init logging from RUST_LOG env var with info as default
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let app_config = read_args().expect("Failed to read CLI arguments");
     let bind_socket_addr = app_config.bind_socket_addr;
@@ -84,13 +91,11 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .wrap(logger)
-            .service(get_safe_data_stream)
-            .service(post_safe_data)
-            //.service(get_account)
-            .service(static_file)
-            .route("/", web::get().to(angular_route))
-            .route("/{path1}/{tail:.*}", web::get().to(angular_route))
             .service(Files::new("/static", app_config.static_dir.clone()))
+            .route("/safe", web::post().to(post_safe_data))
+            .route("/{path1}", web::get().to(get_safe_data_stream))
+            .route("/{path1}/{tail:.*}", web::get().to(get_safe_data_stream))
+            //.service(get_account)
             .app_data(Data::new(app_config.clone()))
             .app_data(Data::new(files_api.clone()))
             .app_data(Data::new(client.clone()))
@@ -135,28 +140,38 @@ fn read_args() -> Result<AppConfig> {
     Ok(app_config)
 }
 
-async fn angular_route(app_config: web::Data<AppConfig>) -> Result<actix_files::NamedFile, Error> {
-    info!("Route to angular app");
-    Ok(actix_files::NamedFile::open( format!("{}/index.html", app_config.static_dir))?)
-}
+async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>) -> impl Responder {
+    let (config_addr, mut relative_path) = path.into_inner();
+    let files_api = files_api_data.get_ref();
+    let client = client_data.get_ref();
 
-#[get("/{static_file}")]
-async fn static_file(path: web::Path<String>, app_config: Data<AppConfig>) -> Result<actix_files::NamedFile, Error> {
-    info!("Route to static file");
-    Ok(actix_files::NamedFile::open(format!("{}/{}", app_config.static_dir, path.into_inner()))?)
-}
+    info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
 
-#[get("/safe/{xor}")]
-async fn get_safe_data_stream(path: web::Path<String>, files_api: Data<FilesApi>, client: Data<Client>) -> impl Responder {
-    let chunk_address = path.into_inner();
+    // load config from path root
+    let config = match get_config(client.clone(), files_api.clone(), config_addr).await {
+        Ok(value) => value,
+        Err(err) => return HttpResponse::InternalServerError()
+            .body(format!("Failed to load config from map [{:?}]", err)),
+    };
 
-    let xor_name = match resolve_xor_name(client, &chunk_address).await {
+    // resolve route
+    let relative_path = match resolve_route(relative_path, config.clone()) {
+        Ok(value) => value,
+        Err(err) => return HttpResponse::InternalServerError()
+            .body(format!("Failed to resolve route [{:?}]", err)),
+    };
+
+    // resolve file name
+    let (is_resolved_file_name, chunk_address) = resolve_file_name(config, relative_path);
+
+    // get xor_name from either DNS or raw
+    let xor_name = match resolve_xor_name(client.clone(), &chunk_address).await  {
         Ok(value) => value,
         Err(err) => return HttpResponse::BadRequest()
             .body(format!("Invalid register or XOR address [{:?}]", err)),
     };
 
-    let mut files_download = FilesDownload::new(files_api.get_ref().clone());
+    let mut files_download = FilesDownload::new(files_api.clone());
 
     let mut chunk_count = 0;
     let mut position = 0;
@@ -164,9 +179,6 @@ async fn get_safe_data_stream(path: web::Path<String>, files_api: Data<FilesApi>
     let mut bytes_read = 0;
     let data_stream = stream! {
         loop {
-            // todo: There is a position/length bug here when using smaller lengths. I've seen
-            //       unexplained duplicate bytes between data chunks returned. Need investigating,
-            //       but a length >= block size should avoid splitting blocks and exposing the issue.
             match files_download.download_from(ChunkAddress::new(xor_name), position, STREAM_CHUNK_SIZE).await {
                 Ok(data) => {
                     chunk_count += 1;
@@ -193,12 +205,11 @@ async fn get_safe_data_stream(path: web::Path<String>, files_api: Data<FilesApi>
     // todo: When there is only 1 known chunk, we could use body (with 'content-length: x') instead of
     //       streaming (with 'transfer-encoding: chunked') to improve performance.
     HttpResponse::Ok()
-        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address))]))
+        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
         .streaming(data_stream)
-    // todo: When the XOR address is not fonud, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
+    // todo: When the XOR address is not found, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
 }
 
-#[post("/safe")]
 async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) -> Result<HttpResponse, Error> {
     info!("Post file");
     let files_api = files_api.get_ref().clone();
@@ -412,7 +423,7 @@ fn get_client_data_dir_path() -> Result<PathBuf> {
     Ok(home_dirs)
 }
 
-async fn resolve_xor_name(client: Data<Client>, chunk_address: &String) -> Result<XorName> {
+async fn resolve_xor_name(client: Client, chunk_address: &String) -> Result<XorName> {
     let xor_name = if is_xor(&chunk_address) {
         // use the XOR address directly
         match str_to_xor_name(&chunk_address) {
@@ -421,7 +432,6 @@ async fn resolve_xor_name(client: Data<Client>, chunk_address: &String) -> Resul
         }
     } else {
         // get current XOR address from the register
-        let client = client.get_ref().clone();
         match resolve_addr(chunk_address.clone(), false, &client).await {
             Ok(data) => match str_to_xor_name(&data) {
                 Ok(data) => data,
@@ -452,9 +462,9 @@ fn is_xor(safe_url: &String) -> bool {
     return safe_url.len() == 64
 }
 
-fn calc_cache_max_age(safe_url: &String) -> u32 {
+fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     // todo: update when NRS (dynamic XOR URL lookup) is available
-    return if is_xor(safe_url) {
+    return if !is_resolved_file_name && is_xor(safe_url) {
         info!("URL is XOR URL (treat as immutable): [{}]", safe_url);
         31536000u32 // cache 'forever'
     } else {
@@ -465,6 +475,17 @@ fn calc_cache_max_age(safe_url: &String) -> u32 {
 
 async fn resolve_addr(addr: String, use_name: bool, client: &Client) -> Result<String> {
     let (address, printing_name) = parse_addr(DNS1, use_name, client.signer_pk())?;
+
+    /*
+    EXPERIMENTAL! The design may change as there becomes a standard approach.
+    Limitations:
+    - Only 1 dns register is looked up against (dns1). Once full, dns2..X should be used.
+    - Reading the history of a register edited by the CLI doesn't seem possible right now, so only
+      one DNS entry can be set (which is very limiting!).
+    - Only 1 site register is looked up against (e.g. traktion1). Once full, traktion2..X should be used
+    - Code is a bit hacked together in general, with many failed assumptions breaking silently
+     */
+
 
     info!("Trying to retrieve DNS register [{}]", printing_name);
 
@@ -489,6 +510,7 @@ async fn resolve_addr(addr: String, use_name: bool, client: &Client) -> Result<S
                             let entry = site_register.clone().read();
                             let (_, site_entry_data) = entry.last().expect("Failed to retrieve latest site register entry");
                             let site_data_str = String::from_utf8(site_entry_data.clone()).unwrap_or_else(|_| format!("{site_entry_data:?}"));
+                            info!("Found site register entry [{}]", site_data_str);
                             return Ok(site_data_str);
                         },
                         Err(_) => {
@@ -525,4 +547,43 @@ fn parse_addr(
         let addr = RegisterAddress::from_hex(address_str).expect("Could not parse hex string");
         Ok((addr, format!("at {address_str}")))
     }
+}
+
+async fn get_config(client: Client, files_api: FilesApi, config_addr: String) -> Result<Config> {
+    if config_addr != SAFE_PATH {
+        let mut files_download = FilesDownload::new(files_api.clone());
+
+        let xor_name = resolve_xor_name(client.clone(), &config_addr).await?;
+
+        let chunk_addr = ChunkAddress::new(xor_name);
+        let data = files_download.download_file(chunk_addr, None).await?;
+
+        let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+        let config: Config = serde_json::from_str(&json).expect("Failed to parse json config");
+
+        Ok(config)
+    } else {
+        Ok(Config::default())
+    }
+}
+
+fn resolve_route(relative_path: String, config: Config) -> Result<String> {
+    for (key, value) in config.route_map {
+        let glob = Glob::new(key.as_str())?.compile_matcher();
+        debug!("route mapper comparing path [{}] with glob [{}]", relative_path, key);
+        if glob.is_match(&relative_path) {
+            info!("route mapper resolved path [{}] to [{}] with glob [{}]", relative_path, key, value);
+            return Ok(value)
+        }
+    };
+    Ok(relative_path)
+}
+
+fn resolve_file_name(config: Config, relative_path: String) -> (bool, String) {
+    if config.file_map.contains_key(&relative_path) {
+        let entry = config.file_map.get(&relative_path).expect("Failed to retrieve path from map").to_string();
+        info!("file mapper resolved path [{}] to chunk_address [{}]", relative_path, entry);
+        return (true, entry)
+    }
+    (false, relative_path)
 }

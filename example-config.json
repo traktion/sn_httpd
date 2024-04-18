@@ -1,0 +1,31 @@
+{
+  "imim": {
+    "name": "Traktion Blog",
+    "articles": [
+      "safe-network-the-journey-to-digital-freedom",
+      "the-clean-green-immutable-dream",
+      "blogging-with-imim-and-safe-network"
+    ]
+  },
+  "fileMap": {
+    "4.106c9bb2b343be2d9595.js": "1381a99b83b0caebeb9477f827cd32eb13f76cece3bfcbc091430bf69d486eb8",
+    "scripts.f06554ebac6809e458f9.js": "2c0b9098706ccf8daea1dc55c9c1012fb42c6cb5aa1466d3429c3a9181c9b0c6",
+    "favicon.ico": "83d95b1139aa25dddfc13b85bd67340ad252d6cc30f30cc98a9b82437041fdfe",
+    "polyfills.00096ed7d93ed26ee6df.js": "a5ca4c6cdd584ef9204b1cf3da8dfe6c57dad203692572eb260e17ba16e46d60",
+    "3rdpartylicenses.txt": "35ce5aae962c8678f84fa42ed7e60701ec8b7b9082cf3177be5880bed7c1aad2",
+    "styles.9f0335efd74014f92e02.css": "e34682385baa3d6a6f831d051e64a185efba132ccb655b58561ffc653d156935",
+    "runtime.168f0d78847a651a0c66.js": "fa79601c014fe34d062b84e67cf58729af92b1a09c7e9a4a8334b54860913086",
+    "main.ad67cac7d5d594eb9c5d.js": "d563577ab032c0e3f4c8ff6bd084cc91dd230a899dfe526a69f4c7138cdbd4d3",
+    "index.html": "4948063cc438a1a8b9bb6b7cb8e132d5014258d2069bad267d7b8c6a23dbb805",
+    "safe-network-the-journey-to-digital-freedom": "e2235a8ae4fa468b1064c2a61aaab556768a4ad5f5ba24377ab6f598ec38bd20",
+    "the-clean-green-immutable-dream": "206d484145da1fdc64193969b506eb76918a47fa091fc3558907ca28ee6895fc",
+    "blogging-with-imim-and-safe-network": "8041e51e5eabababaf2b08f4fd5c888f512dbdd83a623e9e0b881eb16f76ec19",
+    "1_QdxdljdwBwR2QbAVr8scuw.png": "8f2c02dbee730807d93ee12495eed6e36d2376b75402f01ea580eca97c13dc0a",
+    "1_bYTCL7G4KbcR_Y4rd78OhA.png": "600d4bbc3d7f316c2fe014ca6986c6ea62200be316e34bd307ae3aa68f8e3cfc"
+  },
+  "routeMap": {
+    "": "index.html",
+    "blog/*": "index.html",
+    "blog/*/article/*": "index.html"
+  }
+}

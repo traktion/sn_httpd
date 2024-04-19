@@ -31,7 +31,6 @@ use sn_client::registers::RegisterAddress;
 use sn_transfers::bls::PublicKey;
 
 const CLIENT_KEY: &str = "clientkey";
-const DNS1: &str = "6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dd8f1cddbfbd2d975b19912dfd01e3c02077470177455a47814002d5a0f30e886720cc892a3b31f69bf4dae3d2d455fe21";
 const STREAM_CHUNK_SIZE: usize = 2048 * 1024;
 const SAFE_PATH: &str = "safe";
 
@@ -40,6 +39,7 @@ struct AppConfig {
     bind_socket_addr: SocketAddr,
     static_dir: String,
     network_peer_addr: Multiaddr,
+    dns_register: String
 }
 
 /*#[derive(Clone, Default)]
@@ -131,24 +131,31 @@ fn read_args() -> Result<AppConfig> {
         .map_err(|err| anyhow!("Invalid Safe network peer address: {}", err)).unwrap();
     info!("Safe network to be contacted: [{}]", network_peer_addr);
 
+    // Read the network contact socket address from second arg passed
+    let dns_register = args_received
+        .next().expect("No DNS register provided");
+    info!("DNS register: [{}]", dns_register);
+
     let app_config = AppConfig{
         bind_socket_addr,
         static_dir,
-        network_peer_addr
+        network_peer_addr,
+        dns_register
     };
 
     Ok(app_config)
 }
 
-async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>) -> impl Responder {
+async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>, app_config: Data<AppConfig>) -> impl Responder {
     let (config_addr, relative_path) = path.into_inner();
     let files_api = files_api_data.get_ref();
     let client = client_data.get_ref();
+    let app_config = app_config.get_ref();
 
     info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
 
     // load config from path root
-    let config = match get_config(client.clone(), files_api.clone(), config_addr).await {
+    let config = match get_config(client.clone(), files_api.clone(), config_addr, app_config.clone().dns_register).await {
         Ok(value) => value,
         Err(err) => return HttpResponse::InternalServerError()
             .body(format!("Failed to load config from map [{:?}]", err)),
@@ -165,7 +172,7 @@ async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data:
     let (is_resolved_file_name, chunk_address) = resolve_file_name(config, relative_path);
 
     // get xor_name from either DNS or raw
-    let xor_name = match resolve_xor_name(client.clone(), &chunk_address).await  {
+    let xor_name = match resolve_xor_name(client.clone(), &chunk_address, app_config.clone().dns_register).await  {
         Ok(value) => value,
         Err(err) => return HttpResponse::BadRequest()
             .body(format!("Invalid register or XOR address [{:?}]", err)),
@@ -423,7 +430,7 @@ fn get_client_data_dir_path() -> Result<PathBuf> {
     Ok(home_dirs)
 }
 
-async fn resolve_xor_name(client: Client, chunk_address: &String) -> Result<XorName> {
+async fn resolve_xor_name(client: Client, chunk_address: &String, dns_register: String) -> Result<XorName> {
     let xor_name = if is_xor(&chunk_address) {
         // use the XOR address directly
         match str_to_xor_name(&chunk_address) {
@@ -432,7 +439,7 @@ async fn resolve_xor_name(client: Client, chunk_address: &String) -> Result<XorN
         }
     } else {
         // get current XOR address from the register
-        match resolve_addr(chunk_address.clone(), false, &client).await {
+        match resolve_addr(chunk_address.clone(), false, &client, dns_register).await {
             Ok(data) => match str_to_xor_name(&data) {
                 Ok(data) => data,
                 Err(err) => return Err(err)
@@ -473,8 +480,8 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     }
 }
 
-async fn resolve_addr(addr: String, use_name: bool, client: &Client) -> Result<String> {
-    let (address, printing_name) = parse_addr(DNS1, use_name, client.signer_pk())?;
+async fn resolve_addr(addr: String, use_name: bool, client: &Client, dns_register: String) -> Result<String> {
+    let (address, printing_name) = parse_addr(dns_register.as_str(), use_name, client.signer_pk())?;
 
     /*
     EXPERIMENTAL! The design may change as there becomes a standard approach.
@@ -549,11 +556,11 @@ fn parse_addr(
     }
 }
 
-async fn get_config(client: Client, files_api: FilesApi, config_addr: String) -> Result<Config> {
+async fn get_config(client: Client, files_api: FilesApi, config_addr: String, dns_register: String) -> Result<Config> {
     if config_addr != SAFE_PATH {
         let mut files_download = FilesDownload::new(files_api.clone());
 
-        let xor_name = resolve_xor_name(client.clone(), &config_addr).await?;
+        let xor_name = resolve_xor_name(client.clone(), &config_addr, dns_register).await?;
 
         let chunk_addr = ChunkAddress::new(xor_name);
         let data = files_download.download_file(chunk_addr, None).await?;

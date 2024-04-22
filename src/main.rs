@@ -476,7 +476,7 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
         31536000u32 // cache 'forever'
     } else {
         info!("URL is register URL (treat as mutable): [{}]", safe_url);
-        30 // only cache for 30s
+        300 // only cache for 5m
     }
 }
 

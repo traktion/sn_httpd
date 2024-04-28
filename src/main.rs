@@ -1,5 +1,5 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error};
-use actix_web::http::header::{CacheControl, CacheDirective};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
+use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec};
 use actix_files::Files;
 use anyhow::{anyhow};
 use xor_name::XorName;
@@ -21,7 +21,7 @@ use sn_client::transfers::bls::SecretKey;
 use sn_client::transfers::bls_secret_from_hex;
 use sn_client::{Client, ClientEventsBroadcaster, FilesApi, FilesDownload};
 use sn_peers_acquisition::{get_peers_from_args, PeersArgs};
-use color_eyre::{Result};
+use color_eyre::Result;
 use multiaddr::Multiaddr;
 use sn_client::protocol::storage::{Chunk, ChunkAddress};
 use tempfile::{tempdir};
@@ -146,7 +146,7 @@ fn read_args() -> Result<AppConfig> {
     Ok(app_config)
 }
 
-async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>, app_config: Data<AppConfig>) -> impl Responder {
+async fn get_safe_data_stream(request: HttpRequest, path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>, app_config: Data<AppConfig>) -> impl Responder {
     let (config_addr, relative_path) = path.into_inner();
     let files_api = files_api_data.get_ref();
     let client = client_data.get_ref();
@@ -180,25 +180,35 @@ async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data:
 
     let mut files_download = FilesDownload::new(files_api.clone());
 
+    let (range_from, range_to, _) = get_range(&request);
+
     let mut chunk_count = 0;
-    let mut position = 0;
+    let mut position_start: usize = u64::try_into(range_from).unwrap();
+    let position_end: usize = u64::try_into(range_to).unwrap();
     #[allow(unused_assignments)]
     let mut bytes_read = 0;
+
+    // todo: get first chunk synchronously + if bytes < STREAM_CHUNK_SIZE, return non-chunked response
     let data_stream = stream! {
         loop {
-            match files_download.download_from(ChunkAddress::new(xor_name), position, STREAM_CHUNK_SIZE).await {
+            let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
+                STREAM_CHUNK_SIZE
+            } else {
+                position_end - position_start
+            };
+            match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
                 Ok(data) => {
                     chunk_count += 1;
                     bytes_read = data.len();
-                    info!("Read [{}] bytes from file position [{}]", bytes_read, position);
+                    info!("Read [{}] bytes from file position [{}] for XOR address [{}]", bytes_read, position_start, xor_name);
                     yield Ok(data); // Yielding the chunk here
                     if bytes_read < STREAM_CHUNK_SIZE {
                         // If the last data chunk returned is smaller than the stream chunk size
                         // it indicates it is the last chunk in the sequence
-                        info!("Last chunk [{}] read - breaking", chunk_count);
+                        info!("Last chunk [{}] read for XOR address [{}] - breaking", chunk_count, xor_name);
                         break;
                     }
-                    position += STREAM_CHUNK_SIZE;
+                    position_start += chunk_size;
                 }
                 Err(e) => {
                     error!("Error reading file: {}", e);
@@ -211,11 +221,64 @@ async fn get_safe_data_stream(path: web::Path<(String, String)>, files_api_data:
 
     // todo: When there is only 1 known chunk, we could use body (with 'content-length: x') instead of
     //       streaming (with 'transfer-encoding: chunked') to improve performance.
-    HttpResponse::Ok()
-        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
-        .streaming(data_stream)
+    return if request.headers().contains_key("Range") {
+        let real_range_size: u64 = if position_end - position_start > STREAM_CHUNK_SIZE {
+            STREAM_CHUNK_SIZE.try_into().unwrap()
+        } else {
+            (position_end - position_start).try_into().unwrap()
+        };
+
+        HttpResponse::PartialContent()
+            .insert_header(ContentRange(ContentRangeSpec::Bytes {range: Some((range_from, range_from + real_range_size)), instance_length: None}))
+            .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
+            .streaming(data_stream)
+    } else {
+        HttpResponse::Ok()
+            .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
+            .streaming(data_stream)
+    }
     // todo: When the XOR address is not found, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
 }
+
+fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
+    if let Some(range) = request.headers().get("Range") {
+        let range_str = range.to_str().unwrap();
+        debug!("range header [{}]", range_str);
+        let range_value = range_str.split_once("=").unwrap().1;
+        // todo: cover comma separated too: https://docs.rs/actix-web/latest/actix_web/http/header/enum.Range.html
+        if let Some((range_from_str, range_to_str)) = range_value.split_once("-") {
+            let range_from = range_from_str.parse::<u64>().unwrap_or_else(|_| 0);
+            let range_to = range_to_str.parse::<u64>().unwrap_or_else(|_| u64::MAX);
+            let range_length = range_to - range_from;
+            (range_from, range_to, range_length)
+        } else {
+            (0, u64::MAX, u64::MAX)
+        }
+    } else {
+        (0, u64::MAX, u64::MAX)
+    }
+}
+
+/*async fn download_chunk(files_api: FilesApi, position_start: usize, position_end: usize, xor_name: XorName) -> Result<(Bytes, usize)> {
+    let mut files_download = FilesDownload::new(files_api);
+    let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
+        STREAM_CHUNK_SIZE
+    } else {
+        position_end - position_start
+    };
+    info!("Getting [{}] bytes from file position [{}] for XOR address [{}]", chunk_size, position_start, xor_name);
+    match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
+        Ok(data) => {
+            let len = data.len();
+            info!("Read [{}] bytes from file position [{}] for XOR address [{}]", len, position_start, xor_name);
+            Ok((data, len))
+        }
+        Err(e) => {
+            error!("Error reading file: {}", e);
+            Err(e.into())
+        }
+    }
+}*/
 
 async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) -> Result<HttpResponse, Error> {
     info!("Post file");

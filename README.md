@@ -68,13 +68,12 @@ Then build release:
 
 ### Run instructions
 
-`cargo run 127.0.0.1:8080 static /ip4/127.0.0.1/udp/59676/quic-v1/p2p/12D3KooWFyrDyLrzfejWeA2YmEWaST7oS7mfftuutTvuJwQ9mcpT
-6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dd8f1cddbfbd2d975b19912dfd01e3c02077470177455a47814002d5a0f30e886720cc892a3b31f69bf4dae3d2d455fe21`
+`cargo run 127.0.0.1:8080 static /ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3 6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa`
 
 Where:
 
-- `/ip4/127.0.0.1/udp/59676/quic-v1/p2p/12D3KooWFyrDyLrzfejWeA2YmEWaST7oS7mfftuutTvuJwQ9mcpT` is a peer address.
-- `6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dd8f1cddbfbd2d975b19912dfd01e3c02077470177455a47814002d5a0f30e886720cc892a3b31f69bf4dae3d2d455fe21` is a `DNS_REGISTER`.
+- `/ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3` is a peer address.
+- `6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa` is a `DNS_REGISTER`.
 
 ### Site Configuration
 

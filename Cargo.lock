@@ -4346,13 +4346,6 @@ checksum = "e6ecd384b10a64542d77071bd64bd7b231f4ed5940fba55e98c3de13824cf3d7"
 [[package]]
 name = "sn_build_info"
 version = "0.1.7"
-dependencies = [
- "vergen",
-]
-
-[[package]]
-name = "sn_build_info"
-version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8a3a098cc6fdd0a49e2de921634c84a2cf083a84d89c3cc33ae9bcc1b28e6d"
 dependencies = [
@@ -4362,6 +4355,8 @@ dependencies = [
 [[package]]
 name = "sn_client"
 version = "0.106.0-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38bc211b27fc3354e94a8c9f2f1d470bd6f4d612daa02dae2de93b1fdf16c211"
 dependencies = [
  "async-trait",
  "backoff",
@@ -4383,10 +4378,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sn_networking",
- "sn_peers_acquisition 0.2.11-alpha.0",
- "sn_protocol 0.16.4-alpha.0",
- "sn_registers 0.3.13-alpha.0",
- "sn_transfers 0.18.0-alpha.0",
+ "sn_peers_acquisition",
+ "sn_protocol",
+ "sn_registers",
+ "sn_transfers",
  "tempfile",
  "thiserror",
  "tiny-keccak",
@@ -4428,8 +4423,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sn_client",
- "sn_peers_acquisition 0.2.11-alpha.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "sn_transfers 0.18.0-alpha.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sn_peers_acquisition",
+ "sn_transfers",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -4438,7 +4433,9 @@ dependencies = [
 
 [[package]]
 name = "sn_networking"
-version = "0.15.0-alpha.4"
+version = "0.15.0-alpha.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73c9b6b0fb4eeb9e3c1fc3bbf762397ae2ca3f9bcb6828363d3ea88719780792"
 dependencies = [
  "aes-gcm-siv",
  "async-trait",
@@ -4454,9 +4451,9 @@ dependencies = [
  "rayon",
  "rmp-serde",
  "serde",
- "sn_protocol 0.16.4-alpha.0",
- "sn_registers 0.3.13-alpha.0",
- "sn_transfers 0.18.0-alpha.0",
+ "sn_protocol",
+ "sn_registers",
+ "sn_transfers",
  "strum",
  "thiserror",
  "tiny-keccak",
@@ -4471,19 +4468,6 @@ dependencies = [
 [[package]]
 name = "sn_peers_acquisition"
 version = "0.2.11-alpha.0"
-dependencies = [
- "clap",
- "lazy_static",
- "libp2p",
- "rand",
- "sn_protocol 0.16.4-alpha.0",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "sn_peers_acquisition"
-version = "0.2.11-alpha.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95ad95532e436f99e2a5d5678234f7282b5a5aff25152a4f2fe8c657d2d202b8"
 dependencies = [
@@ -4491,36 +4475,9 @@ dependencies = [
  "lazy_static",
  "libp2p",
  "rand",
- "sn_protocol 0.16.4-alpha.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sn_protocol",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "sn_protocol"
-version = "0.16.4-alpha.0"
-dependencies = [
- "blsttc",
- "bytes",
- "color-eyre",
- "crdts",
- "custom_debug",
- "dirs-next",
- "hex",
- "lazy_static",
- "libp2p",
- "rmp-serde",
- "serde",
- "serde_json",
- "sha2",
- "sn_build_info 0.1.7",
- "sn_registers 0.3.13-alpha.0",
- "sn_transfers 0.18.0-alpha.0",
- "thiserror",
- "tiny-keccak",
- "tonic-build",
- "tracing",
- "xor_name",
 ]
 
 [[package]]
@@ -4542,27 +4499,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sn_build_info 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "sn_registers 0.3.13-alpha.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "sn_transfers 0.18.0-alpha.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sn_build_info",
+ "sn_registers",
+ "sn_transfers",
  "thiserror",
  "tiny-keccak",
  "tonic-build",
  "tracing",
- "xor_name",
-]
-
-[[package]]
-name = "sn_registers"
-version = "0.3.13-alpha.0"
-dependencies = [
- "blsttc",
- "crdts",
- "hex",
- "rmp-serde",
- "serde",
- "thiserror",
- "tiny-keccak",
  "xor_name",
 ]
 
@@ -4579,29 +4522,6 @@ dependencies = [
  "serde",
  "thiserror",
  "tiny-keccak",
- "xor_name",
-]
-
-[[package]]
-name = "sn_transfers"
-version = "0.18.0-alpha.0"
-dependencies = [
- "blsttc",
- "custom_debug",
- "dirs-next",
- "fs2",
- "hex",
- "lazy_static",
- "libp2p",
- "rand",
- "rayon",
- "rmp-serde",
- "serde",
- "serde_json",
- "thiserror",
- "tiny-keccak",
- "tracing",
- "walkdir",
  "xor_name",
 ]
 

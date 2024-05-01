@@ -1,46 +1,40 @@
+mod proxy;
+mod autonomi;
+mod rds;
+mod config;
+
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
 use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec};
 use actix_files::Files;
-use anyhow::{anyhow};
 use xor_name::XorName;
 use log::{info, error, debug};
-use std::net::SocketAddr;
-use std::env::args;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::{fs};
 use std::collections::HashMap;
 use std::fs::{File,create_dir_all};
 use std::io::{Write};
-use std::path::PathBuf;
-use std::path::Path;
+use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
 use bytes::{Bytes};
 use async_stream::stream;
-use sn_client::transfers::bls::SecretKey;
-use sn_client::transfers::bls_secret_from_hex;
-use sn_client::{Client, ClientEventsBroadcaster, FilesApi, FilesDownload};
-use sn_peers_acquisition::{get_peers_from_args, PeersArgs};
-use color_eyre::Result;
-use multiaddr::Multiaddr;
+use sn_client::{FilesApi, FilesDownload};
+use color_eyre::{Report, Result};
 use sn_client::protocol::storage::{Chunk, ChunkAddress};
 use tempfile::{tempdir};
 use futures::{StreamExt};
 use globset::{Glob};
-use sn_client::registers::RegisterAddress;
-use sn_transfers::bls::PublicKey;
+use awc::Client as AwcClient;
+
+use crate::autonomi::Autonomi;
+use crate::proxy::Proxy;
+use crate::rds::Rds;
+use crate::config::AppConfig;
 
 const CLIENT_KEY: &str = "clientkey";
 const STREAM_CHUNK_SIZE: usize = 2048 * 1024;
 const SAFE_PATH: &str = "safe";
-
-#[derive(Clone)]
-struct AppConfig {
-    bind_socket_addr: SocketAddr,
-    static_dir: String,
-    network_peer_addr: Multiaddr,
-    dns_register: String
-}
+const PROXY_ENABLED: bool = false;
 
 /*#[derive(Clone, Default)]
 struct Accounts {
@@ -78,13 +72,12 @@ async fn main() -> std::io::Result<()> {
     // init logging from RUST_LOG env var with info as default
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let app_config = read_args().expect("Failed to read CLI arguments");
+    let app_config = AppConfig::read_args().expect("Failed to read CLI arguments");
     let bind_socket_addr = app_config.bind_socket_addr;
 
     // initialise safe network connection and files api
-    let client = safe_connect(&app_config.network_peer_addr).await.expect("Failed to connect to Safe Network");
-    let data_dir_path = get_client_data_dir_path().expect("Failed to get client data dir path");
-    let files_api = FilesApi::build(client.clone(), data_dir_path).expect("Failed to instantiate FilesApi");
+    let (client, files_api) = Autonomi::new(app_config.clone()).init().await;
+    let rds = Rds::new(client.clone(), app_config.clone().dns_register);
 
     HttpServer::new(move || {
         let logger = Logger::default();
@@ -93,90 +86,83 @@ async fn main() -> std::io::Result<()> {
             .wrap(logger)
             .service(Files::new("/static", app_config.static_dir.clone()))
             .route("/safe", web::post().to(post_safe_data))
-            .route("/{path1}", web::get().to(get_safe_data_stream))
-            .route("/{path1}/{tail:.*}", web::get().to(get_safe_data_stream))
+            .route("/{path:.*}", web::get().to(get_safe_data_stream))
             //.service(get_account)
             .app_data(Data::new(app_config.clone()))
             .app_data(Data::new(files_api.clone()))
             .app_data(Data::new(client.clone()))
+            .app_data(Data::new(AwcClient::default()))
+            .app_data(Data::new(rds.clone()))
     })
         .bind(bind_socket_addr)?
         .run()
         .await
 }
 
-fn read_args() -> Result<AppConfig> {
-    // Skip executable name form args
-    let mut args_received = args();
-    args_received.next();
+async fn get_safe_data_stream(
+    request: HttpRequest,
+    path: web::Path<String>,
+    files_api_data: Data<FilesApi>,
+    conn: ConnectionInfo,
+    payload: web::Payload,
+    peer_addr: Option<PeerAddr>,
+    awc_client: web::Data<AwcClient>,
+    rds_data: Data<Rds>,
+) -> impl Responder {
+    if PROXY_ENABLED {
+        let proxy = Proxy::new(".autonomi".to_string(), awc_client.get_ref().clone());
+        if proxy.is_remote_url(&conn.host()) {
+            return match proxy.forward(request, payload, peer_addr).await {
+                Ok(value) => value,
+                Err(err) => return HttpResponse::InternalServerError()
+                    .body(format!("Failed to load config from map [{:?}]", err)),
+            }
+        }
+    }
 
-    // Read the network contact socket address from first arg passed
-    let bind_addr = args_received
-        .next().expect("No bind address provided");
-    let bind_socket_addr: SocketAddr = bind_addr
-        .parse()
-        .map_err(|err| anyhow!("Invalid bind socket address: {}", err)).unwrap();
-    info!("Bind address [{}]", bind_socket_addr);
-
-    // Read the network contact socket address from second arg passed
-    let static_dir = args_received
-        .next().expect("No static dir provided");
-    info!("Static file directory: [{}]", static_dir);
-
-    // Read the network contact peer multiaddr from third arg passed
-    let network_contact = args_received
-        .next().expect("No Safe network peer address provided");
-    let network_peer_addr: Multiaddr = network_contact
-        .parse::<Multiaddr>()
-        .map_err(|err| anyhow!("Invalid Safe network peer address: {}", err)).unwrap();
-    info!("Safe network to be contacted: [{}]", network_peer_addr);
-
-    // Read the network contact socket address from second arg passed
-    let dns_register = args_received
-        .next().expect("No DNS register provided");
-    info!("DNS register: [{}]", dns_register);
-
-    let app_config = AppConfig{
-        bind_socket_addr,
-        static_dir,
-        network_peer_addr,
-        dns_register
-    };
-
-    Ok(app_config)
-}
-
-async fn get_safe_data_stream(request: HttpRequest, path: web::Path<(String, String)>, files_api_data: Data<FilesApi>, client_data: Data<Client>, app_config: Data<AppConfig>) -> impl Responder {
-    let (config_addr, relative_path) = path.into_inner();
+    let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
     let files_api = files_api_data.get_ref();
-    let client = client_data.get_ref();
-    let app_config = app_config.get_ref();
+    let rds = rds_data.get_ref();
 
     info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
 
-    // load config from path root
-    let config = match get_config(client.clone(), files_api.clone(), config_addr, app_config.clone().dns_register).await {
+    // resolve chunk address for config using RDS
+    let resolved_config_addr = match resolve_chunk_address(rds.clone(), &config_addr).await {
+        Ok(value) => value,
+        Err(_) => return HttpResponse::InternalServerError()
+            .body(format!("Failed to resolve RDS name [{:?}]", config_addr)),
+    };
+
+    // if the app-config.json is being looked up, copy the resolved chunk address of the config
+    let resolved_relative_path = if relative_path == "app-config.json" {
+        resolved_config_addr.clone()
+    } else {
+        relative_path.clone()
+    };
+
+    // load config from subdomain (of .autonomi) or path root
+    let config = match get_config(files_api.clone(), config_addr, resolved_config_addr).await {
         Ok(value) => value,
         Err(err) => return HttpResponse::InternalServerError()
             .body(format!("Failed to load config from map [{:?}]", err)),
     };
 
     // resolve route
-    let relative_path = match resolve_route(relative_path, config.clone()) {
+    let resolved_relative_path = match resolve_route(resolved_relative_path, config.clone()) {
         Ok(value) => value,
         Err(err) => return HttpResponse::InternalServerError()
             .body(format!("Failed to resolve route [{:?}]", err)),
     };
 
-    // resolve file name
-    let (is_resolved_file_name, chunk_address) = resolve_file_name(config, relative_path);
-
-    // get xor_name from either DNS or raw
-    let xor_name = match resolve_xor_name(client.clone(), &chunk_address, app_config.clone().dns_register).await  {
+    // resolve file name to chunk address
+    let (is_resolved_file_name, chunk_address) = match resolve_file_name(config, resolved_relative_path) {
         Ok(value) => value,
-        Err(err) => return HttpResponse::BadRequest()
-            .body(format!("Invalid register or XOR address [{:?}]", err)),
+        Err(err) => return HttpResponse::NotFound()
+            .body(format!("Failed to resolve path [{:?}]", err)),
     };
+
+    // convert chunk address to xor_name
+    let xor_name = str_to_xor_name(&chunk_address).unwrap();
 
     let mut files_download = FilesDownload::new(files_api.clone());
 
@@ -258,27 +244,6 @@ fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
         (0, u64::MAX, u64::MAX)
     }
 }
-
-/*async fn download_chunk(files_api: FilesApi, position_start: usize, position_end: usize, xor_name: XorName) -> Result<(Bytes, usize)> {
-    let mut files_download = FilesDownload::new(files_api);
-    let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
-        STREAM_CHUNK_SIZE
-    } else {
-        position_end - position_start
-    };
-    info!("Getting [{}] bytes from file position [{}] for XOR address [{}]", chunk_size, position_start, xor_name);
-    match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
-        Ok(data) => {
-            let len = data.len();
-            info!("Read [{}] bytes from file position [{}] for XOR address [{}]", len, position_start, xor_name);
-            Ok((data, len))
-        }
-        Err(e) => {
-            error!("Error reading file: {}", e);
-            Err(e.into())
-        }
-    }
-}*/
 
 async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) -> Result<HttpResponse, Error> {
     info!("Post file");
@@ -432,104 +397,43 @@ async fn get_account(path: web::Path<String>, app_config: web::Data<AppConfig>, 
     }
 }*/
 
-async fn safe_connect(peer: &Multiaddr) -> Result<Client>  {
-    // note: this was pulled directly from sn_cli
-
-    println!("Instantiating a SAFE client...");
-    let secret_key = get_client_secret_key(&get_client_data_dir_path()?)?;
-
-    let peer_args = PeersArgs{first: false, peers: vec![peer.clone()]};
-    let bootstrap_peers = get_peers_from_args(peer_args).await?;
-
-    println!(
-        "Connecting to the network with {} peers",
-        bootstrap_peers.len(),
-    );
-
-    let bootstrap_peers = if bootstrap_peers.is_empty() {
-        // empty vec is returned if `local-discovery` flag is provided
-        None
+fn get_config_and_relative_path(hostname: &str, path: &str) -> (String, String) {
+    // assert: subdomain.autonomi as acceptable format
+    return if hostname.ends_with(".autonomi") {
+        let subdomain = hostname.split_once(".").unwrap().0.to_string();
+        (subdomain, path.to_string())
     } else {
-        Some(bootstrap_peers)
-    };
-
-    // get the broadcaster as we want to have our own progress bar.
-    let broadcaster = ClientEventsBroadcaster::default();
-
-    let result = Client::new(
-        secret_key,
-        bootstrap_peers,
-        None,
-        Some(broadcaster),
-    ).await?;
-    Ok(result)
-}
-
-fn get_client_secret_key(root_dir: &PathBuf) -> Result<SecretKey> {
-    // note: this was pulled directly from sn_cli
-    // create the root directory if it doesn't exist
-    std::fs::create_dir_all(root_dir)?;
-    let key_path = root_dir.join(CLIENT_KEY);
-    let secret_key = if key_path.is_file() {
-        info!("Client key found. Loading from file...");
-        let secret_hex_bytes = std::fs::read(key_path)?;
-        bls_secret_from_hex(secret_hex_bytes)?
-    } else {
-        info!("No key found. Generating a new client key...");
-        let secret_key = SecretKey::random();
-        std::fs::write(key_path, hex::encode(secret_key.to_bytes()))?;
-        secret_key
-    };
-    Ok(secret_key)
-}
-
-fn get_client_data_dir_path() -> Result<PathBuf> {
-    // note: this was pulled directly from sn_cli
-    let mut home_dirs = dirs_next::data_dir().expect("Data directory is obtainable");
-    home_dirs.push("safe");
-    home_dirs.push("client");
-    std::fs::create_dir_all(home_dirs.as_path())?;
-    info!("home_dirs.as_path(): {}", home_dirs.to_str().unwrap());
-    Ok(home_dirs)
-}
-
-async fn resolve_xor_name(client: Client, chunk_address: &String, dns_register: String) -> Result<XorName> {
-    let xor_name = if is_xor(&chunk_address) {
-        // use the XOR address directly
-        match str_to_xor_name(&chunk_address) {
-            Ok(data) => data,
-            Err(err) => return Err(err)
+        if path.contains("/") {
+            let (part1, part2) = path.split_once("/").unwrap();
+            (part1.to_string(), part2.to_string())
+        } else {
+            (path.to_string(), path.to_string())
         }
+    }
+}
+
+async fn resolve_chunk_address(rds: Rds, chunk_address: &String) -> Result<String> {
+    return if !is_xor(chunk_address) {
+        rds.resolve(chunk_address.clone(), false).await
     } else {
-        // get current XOR address from the register
-        match resolve_addr(chunk_address.clone(), false, &client, dns_register).await {
-            Ok(data) => match str_to_xor_name(&data) {
-                Ok(data) => data,
-                Err(err) => return Err(err)
-            }
-            Err(err) => return Err(err)
-        }
-    };
-    Ok(xor_name)
+        Ok(chunk_address.clone())
+    }
+}
+
+fn is_xor_len(chunk_address: &String) -> bool {
+    return chunk_address.len() == 64;
+}
+
+fn is_xor(chunk_address: &String) -> bool {
+    return is_xor_len(chunk_address) && str_to_xor_name(chunk_address).is_ok();
 }
 
 fn str_to_xor_name(str: &String) -> Result<XorName> {
-    let path = Path::new(str);
-    let hex_xorname = path
-        .file_name()
-        .expect("Uploaded file to have name")
-        .to_str()
-        .expect("Failed to convert path to string");
-    let bytes = hex::decode(hex_xorname)?;
+    let bytes = hex::decode(str)?;
     let xor_name_bytes: [u8; 32] = bytes
         .try_into()
         .expect("Failed to parse XorName from hex string");
     Ok(XorName(xor_name_bytes))
-}
-
-fn is_xor(safe_url: &String) -> bool {
-    // todo: update when NRS (dynamic XOR URL lookup) is available
-    return safe_url.len() == 64
 }
 
 fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
@@ -543,89 +447,13 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     }
 }
 
-async fn resolve_addr(addr: String, use_name: bool, client: &Client, dns_register: String) -> Result<String> {
-    let (address, printing_name) = parse_addr(dns_register.as_str(), use_name, client.signer_pk())?;
-
-    /*
-    EXPERIMENTAL! The design may change as there becomes a standard approach.
-    Limitations:
-    - Only 1 dns register is looked up against (dns1). Once full, dns2..X should be used.
-    - Reading the history of a register edited by the CLI doesn't seem possible right now, so only
-      one DNS entry can be set (which is very limiting!).
-    - Only 1 site register is looked up against (e.g. traktion1). Once full, traktion2..X should be used
-    - Code is a bit hacked together in general, with many failed assumptions breaking silently
-     */
-
-
-    info!("Trying to retrieve DNS register [{}]", printing_name);
-
-    match client.get_register(address).await {
-        Ok(register) => {
-            info!("Successfully retrieved DNS register [{}]", printing_name);
-
-            let entries = register.clone().read();
-
-            // print all entries
-            for entry in entries.clone() {
-                let (hash, entry_data) = entry.clone();
-                let data_str = String::from_utf8(entry_data.clone()).unwrap_or_else(|_| format!("{entry_data:?}"));
-                info!("Entry - hash [{}], data: [{}]", hash, data_str);
-
-                let Some((name, data)) = data_str.split_once(',') else { continue };
-                if name == addr {
-                    info!("Found DNS entry - name [{}], data: [{}]", name, data);
-                    let (dns_address, _) = parse_addr(&data, false, client.signer_pk())?;
-                    match client.get_register(dns_address).await {
-                        Ok(site_register) => {
-                            let entry = site_register.clone().read();
-                            let (_, site_entry_data) = entry.last().expect("Failed to retrieve latest site register entry");
-                            let site_data_str = String::from_utf8(site_entry_data.clone()).unwrap_or_else(|_| format!("{site_entry_data:?}"));
-                            info!("Found site register entry [{}]", site_data_str);
-                            return Ok(site_data_str);
-                        },
-                        Err(_) => {
-                            continue
-                        }
-                    }
-                }
-            }
-            info!("Did not find DNS entry for [{}]", addr);
-            Ok(addr.to_string())
-        }
-        Err(error) => {
-            info!(
-                "Did not retrieve DNS register [{}] with error [{}]",
-                printing_name, error
-            );
-            return Err(error.into());
-        }
-    }
-}
-
-fn parse_addr(
-    address_str: &str,
-    use_name: bool,
-    pk: PublicKey,
-) -> Result<(RegisterAddress, String)> {
-    if use_name {
-        debug!("Parsing address as name");
-        let user_metadata = XorName::from_content(address_str.as_bytes());
-        let addr = RegisterAddress::new(user_metadata, pk);
-        Ok((addr, format!("'{address_str}' at {addr}")))
-    } else {
-        debug!("Parsing address as hex");
-        let addr = RegisterAddress::from_hex(address_str).expect("Could not parse hex string");
-        Ok((addr, format!("at {address_str}")))
-    }
-}
-
-async fn get_config(client: Client, files_api: FilesApi, config_addr: String, dns_register: String) -> Result<Config> {
-    if config_addr != SAFE_PATH {
+async fn get_config(files_api: FilesApi, config_addr: String, resolved_config_addr: String) -> Result<Config> {
+    if config_addr != SAFE_PATH && config_addr != "" {
         let mut files_download = FilesDownload::new(files_api.clone());
 
-        let xor_name = resolve_xor_name(client.clone(), &config_addr, dns_register).await?;
-
-        let chunk_addr = ChunkAddress::new(xor_name);
+        let config_xor_name = str_to_xor_name(&resolved_config_addr)
+            .unwrap_or_else(|_| XorName::default());
+        let chunk_addr = ChunkAddress::new(config_xor_name);
         let data = files_download.download_file(chunk_addr, None).await?;
 
         let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
@@ -649,11 +477,14 @@ fn resolve_route(relative_path: String, config: Config) -> Result<String> {
     Ok(relative_path)
 }
 
-fn resolve_file_name(config: Config, relative_path: String) -> (bool, String) {
-    if config.file_map.contains_key(&relative_path) {
+fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, String)> {
+    return if is_xor(&relative_path) {
+        Ok((false, relative_path))
+    } else if config.file_map.contains_key(&relative_path) {
         let entry = config.file_map.get(&relative_path).expect("Failed to retrieve path from map").to_string();
         info!("file mapper resolved path [{}] to chunk_address [{}]", relative_path, entry);
-        return (true, entry)
+        Ok((true, entry))
+    } else {
+        Err(Report::msg(format!("relative_path is neither XOR nor in the data map [{}]", relative_path)))
     }
-    (false, relative_path)
 }

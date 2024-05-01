@@ -18,9 +18,9 @@ integrate with Autonomi in a more conventional way and gives end users a convent
 - Data retrieval from Autonomi using `/safe/[XOR_ADDRESS]`. Data is streamed directly from Autonomi to reduce
   latency and allows clients to immediately consume the data.
 - Data retrieval from Autonomic using file maps for human readable naming `/[MAP_XOR_ADDRESS]/[MY_FILE_NAME]`. Enables
-  regular static sites to be uploaded/browsed (once a fileMap is provided - see [example-config](example-config.json).
+  regular static sites to be uploaded/browsed (once a fileMap is provided - see [example-config](app-config.json).
 - Routing from URLs to specific `[XOR_ADDRESS]` or `[FILE_NAME]`. Enables SPA (single page apps) such as Angular or
-  React to be hosted (once a routeMap is provided - see [example-config](example-config.json)
+  React to be hosted (once a routeMap is provided - see [example-config](app-config.json)
 - Experimental support for DNS style lookups, using registers to provide `/[DNS_NAME]/[MY_FILE_NAME]`. More to follow!
 - Hosting of conventional static files using `/static`.
 - Native integration of the `sn_client` libraries into Actix web framework. These are both written in Rust to provide
@@ -66,6 +66,26 @@ Then build release:
 
 `cargo build --release --target x86_64-pc-windows-gnu`
 
+### ARM Target
+
+On Ubuntu:
+
+`sudo apt install gcc make gcc-arm* gcc-aarch64* binutils-arm* binutils-aarch64* pkg-config libssl-dev`
+
+Then add target:
+
+`rustup target add arm-unknown-linux-musleabi`
+`rustup target add gcc-arm-linux-gnueabi`
+
+Then update the environment:
+
+`export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc`
+`export CC=aarch64-linux-gnu-gcc`
+
+Then build release:
+
+`cargo build --release --target arm-unknown-linux-musleabi`
+
 ### Run instructions
 
 `cargo run 127.0.0.1:8080 static /ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3 6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa`
@@ -75,14 +95,14 @@ Where:
 - `/ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3` is a peer address.
 - `6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa` is a `DNS_REGISTER`.
 
-### Site Configuration
+### App Configuration
 
-See [example-config](example-config.json) for customising how your web site/app behaves on `sn_httpd`.
+See [example-config](app-config.json) for customising how your web site/app behaves on `sn_httpd`.
 
 The config should be uploaded to Autonomi and the corresponding `XOR_ADDRESS` can then be used as the site root,
 e.g. `/[XOR_ADDRESS]/[OTHER_FILES]`. The config can have any file name as only the XOR address is important to `sn_httpd`.
 
-Given each change to the Site Configuration will result in a different XOR address, a form of DNS can be used to map a
+Given each change to the App Configuration will result in a different XOR address, a form of DNS can be used to map a
 name to an XOR address.
 
 At the time of writing, only a single name can be referenced per `sn_httpd` instance. This will change once the register
@@ -92,11 +112,11 @@ To create a site register (for the specific site/app):
 
 `safe register create [SITE_REGISTER]`
 
-To point the register at your Site Configuration:
+To point the register at your App Configuration:
 
 `safe register edit [SITE_REGISTER] [CONFIG_XOR_ADDRESS]`
 
-When the Site Configuration is updated, repeat the above with its new XOR address.
+When the App Configuration is updated, repeat the above with its new XOR address.
 
 To create a DNS register for the `sn_httpd` instance, use the CLI:
 
@@ -104,10 +124,10 @@ To create a DNS register for the `sn_httpd` instance, use the CLI:
 
 To add/edit a name, edit the register to append the site register:
 
-`safe register edit [REGISTER_ADDRESS] "[SITE_NAME],[SITE_ADDRESS]"`
+`safe register edit [REGISTER_ADDRESS] "[APP_NAME],[APP_ADDRESS]"`
 
-Once completed, `/[SITE_NAME]` will resolve to the Site Configuration and any path after this point will reference
-the Site Configuration, e.g. with `/mysite/myfile`, `myfile` can be in the `dataMap` and route to an XOR address.
+Once completed, `/[APP_NAME]` will resolve to the App Configuration and any path after this point will reference
+the App Configuration, e.g. with `/myapp/myfile`, `myfile` can be in the `dataMap` and route to an XOR address.
 
 ### Example site - IMIM!
 

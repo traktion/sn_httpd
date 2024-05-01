@@ -4397,7 +4397,7 @@ dependencies = [
 
 [[package]]
 name = "sn_httpd"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "actix-files",
  "actix-http",

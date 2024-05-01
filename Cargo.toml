@@ -38,6 +38,6 @@ reqwest = { version = "0.12.4", features = ["stream"] }
 tokio-stream = "0.1.15"
 #self_encryption = "0.29.1"
 
-[patch.crates-io]
-sn_client = { path = "/home/paul/dev/safe_network/sn_client" }
+#[patch.crates-io]
+#sn_client = { path = "/home/paul/dev/safe_network/sn_client" }
 #self_encryption = { path = "/home/paul/dev/self_encryption" }

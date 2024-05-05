@@ -1,6 +1,6 @@
 mod proxy;
 mod autonomi;
-mod rds;
+mod dns;
 mod config;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
@@ -28,7 +28,7 @@ use awc::Client as AwcClient;
 
 use crate::autonomi::Autonomi;
 use crate::proxy::Proxy;
-use crate::rds::Rds;
+use crate::dns::Dns;
 use crate::config::AppConfig;
 
 const CLIENT_KEY: &str = "clientkey";
@@ -77,7 +77,7 @@ async fn main() -> std::io::Result<()> {
 
     // initialise safe network connection and files api
     let (client, files_api) = Autonomi::new(app_config.clone()).init().await;
-    let rds = Rds::new(client.clone(), app_config.clone().dns_register);
+    let dns = Dns::new(client.clone(), app_config.clone().dns_register);
 
     HttpServer::new(move || {
         let logger = Logger::default();
@@ -92,7 +92,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(Data::new(files_api.clone()))
             .app_data(Data::new(client.clone()))
             .app_data(Data::new(AwcClient::default()))
-            .app_data(Data::new(rds.clone()))
+            .app_data(Data::new(dns.clone()))
     })
         .bind(bind_socket_addr)?
         .run()
@@ -107,7 +107,7 @@ async fn get_safe_data_stream(
     payload: web::Payload,
     peer_addr: Option<PeerAddr>,
     awc_client: web::Data<AwcClient>,
-    rds_data: Data<Rds>,
+    dns_data: Data<Dns>,
 ) -> impl Responder {
     if PROXY_ENABLED {
         let proxy = Proxy::new(".autonomi".to_string(), awc_client.get_ref().clone());
@@ -122,15 +122,15 @@ async fn get_safe_data_stream(
 
     let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
     let files_api = files_api_data.get_ref();
-    let rds = rds_data.get_ref();
+    let dns = dns_data.get_ref();
 
     info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
 
-    // resolve chunk address for config using RDS
-    let resolved_config_addr = match resolve_chunk_address(rds.clone(), &config_addr).await {
+    // resolve chunk address for config using DNS
+    let resolved_config_addr = match resolve_chunk_address(dns.clone(), &config_addr).await {
         Ok(value) => value,
         Err(_) => return HttpResponse::InternalServerError()
-            .body(format!("Failed to resolve RDS name [{:?}]", config_addr)),
+            .body(format!("Failed to resolve DNS name [{:?}]", config_addr)),
     };
 
     // if the app-config.json is being looked up, copy the resolved chunk address of the config
@@ -412,9 +412,9 @@ fn get_config_and_relative_path(hostname: &str, path: &str) -> (String, String) 
     }
 }
 
-async fn resolve_chunk_address(rds: Rds, chunk_address: &String) -> Result<String> {
+async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
     return if !is_xor(chunk_address) {
-        rds.resolve(chunk_address.clone(), false).await
+        dns.resolve(chunk_address.clone(), false).await
     } else {
         Ok(chunk_address.clone())
     }

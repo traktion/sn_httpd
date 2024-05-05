@@ -5,12 +5,12 @@ use sn_client::transfers::bls::PublicKey;
 use xor_name::XorName;
 
 #[derive(Clone)]
-pub struct Rds {
+pub struct Dns {
     dns_register: String,
     client: Client
 }
 
-impl Rds {
+impl Dns {
     pub fn new(client: Client, dns_register: String) -> Self {
         Self {
             dns_register,

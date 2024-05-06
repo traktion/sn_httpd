@@ -109,16 +109,17 @@ async fn get_safe_data_stream(
     awc_client: web::Data<AwcClient>,
     dns_data: Data<Dns>,
 ) -> impl Responder {
-    if PROXY_ENABLED {
+    // todo: fix build issue with aarch64 when the proxy is included
+    /*if PROXY_ENABLED {
         let proxy = Proxy::new(".autonomi".to_string(), awc_client.get_ref().clone());
         if proxy.is_remote_url(&conn.host()) {
             return match proxy.forward(request, payload, peer_addr).await {
                 Ok(value) => value,
                 Err(err) => return HttpResponse::InternalServerError()
-                    .body(format!("Failed to load config from map [{:?}]", err)),
+                    .body(format!("Failed to forward proxy request [{:?}]", err)),
             }
         }
-    }
+    }*/
 
     let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
     let files_api = files_api_data.get_ref();

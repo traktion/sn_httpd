@@ -84,7 +84,7 @@ Then update the environment:
 
 Then build release:
 
-`cargo build --release --target arm-unknown-linux-musleabi`
+`cargo build --release --target aarch64-unknown-linux-musl`
 
 ### Run instructions
 

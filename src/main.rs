@@ -414,7 +414,7 @@ fn get_config_and_relative_path(hostname: &str, path: &str) -> (String, String) 
 }
 
 async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
-    return if !is_xor(chunk_address) {
+    return if chunk_address != SAFE_PATH && !is_xor(chunk_address) {
         dns.resolve(chunk_address.clone(), false).await
     } else {
         Ok(chunk_address.clone())

@@ -88,12 +88,12 @@ Then build release:
 
 ### Run instructions
 
-`cargo run 127.0.0.1:8080 static /ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3 6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa`
+`cargo run 127.0.0.1:8080 static https://sn-testnet.s3.eu-west-2.amazonaws.com/network-contacts 4b4a0fa14f00ffdcc2c3dabef49721bdde81e9263cde5e2f4885459685d1f75d9099ecd71284c151e2a835e01b9a3847ea9676560620b9c038f9c6d623384ab1359ebd7ed1ff8add5c8d6e81d75d2742`
 
 Where:
 
-- `/ip4/142.93.46.42/udp/43338/quic-v1/p2p/12D3KooWSaCWsF2qLULtKTtjJPYpzCKn3X3aY19WdznPB5jUfmt3` is a peer address.
-- `6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44ddaf480334bbff0cd23302b386bfc071a51d132e8e13055701a94211eaada0b6b4c37a94f8adc1e96be1aa1f149b7faffa` is a `DNS_REGISTER`.
+- `https://sn-testnet.s3.eu-west-2.amazonaws.com/network-contacts` is a URL containing a list of peer addresses.
+- `4b4a0fa14f00ffdcc2c3dabef49721bdde81e9263cde5e2f4885459685d1f75d9099ecd71284c151e2a835e01b9a3847ea9676560620b9c038f9c6d623384ab1359ebd7ed1ff8add5c8d6e81d75d2742` is a `DNS_REGISTER`.
 
 ### App Configuration
 

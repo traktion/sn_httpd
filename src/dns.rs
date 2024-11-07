@@ -1,7 +1,8 @@
+use autonomi::Client;
+use autonomi::client::registers::RegisterAddress;
 use log::{debug, info};
-use sn_client::Client;
-use sn_client::registers::RegisterAddress;
-use sn_client::transfers::bls::PublicKey;
+use sn_transfers::bls;
+use sn_transfers::bls::PublicKey;
 use xor_name::XorName;
 
 #[derive(Clone)]
@@ -19,7 +20,9 @@ impl Dns {
     }
 
     pub async fn resolve(&self, addr: String, use_name: bool) -> color_eyre::Result<String> {
-        let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, self.client.signer_pk())?;
+        let secret_key = bls::SecretKey::random(); // todo: get owner's key
+        let public_key = secret_key.public_key();
+        let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, public_key)?;
 
         /*
         EXPERIMENTAL! The design may change as there becomes a standard approach.
@@ -34,26 +37,26 @@ impl Dns {
 
         info!("Trying to retrieve DNS register [{}]", printing_name);
 
-        match self.client.get_register(address).await {
+        match self.client.register_get(address).await {
             Ok(register) => {
                 debug!("Successfully retrieved DNS register [{}]", printing_name);
 
-                let entries = register.clone().read();
+                let entries = register.clone().values();
 
                 // print all entries
                 for entry in entries.clone() {
-                    let (hash, entry_data) = entry.clone();
+                    let entry_data = entry.to_vec();
                     let data_str = String::from_utf8(entry_data.clone()).unwrap_or_else(|_| format!("{entry_data:?}"));
-                    debug!("Entry - hash [{}], data: [{}]", hash, data_str);
+                    debug!("Entry - data: [{}]", data_str);
 
                     let Some((name, data)) = data_str.split_once(',') else { continue };
                     if name == addr {
                         debug!("Found DNS entry - name [{}], data: [{}]", name, data);
-                        let (dns_address, _) = self.parse_addr(&data, false, self.client.signer_pk())?;
-                        match self.client.get_register(dns_address).await {
+                        let (dns_address, _) = self.parse_addr(&data, false, public_key.clone())?;
+                        match self.client.register_get(dns_address).await {
                             Ok(site_register) => {
-                                let entry = site_register.clone().read();
-                                let (_, site_entry_data) = entry.last().expect("Failed to retrieve latest site register entry");
+                                let entry = site_register.clone().values();
+                                let site_entry_data = entry.last().expect("Failed to retrieve latest site register entry").to_vec();
                                 let site_data_str = String::from_utf8(site_entry_data.clone()).unwrap_or_else(|_| format!("{site_entry_data:?}"));
                                 info!("Found site register entry [{}]", site_data_str);
                                 return Ok(site_data_str);
@@ -76,6 +79,7 @@ impl Dns {
             }
         }
     }
+
 
     fn parse_addr(
         &self,

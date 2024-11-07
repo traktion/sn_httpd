@@ -14,18 +14,22 @@ use std::{fs};
 use std::collections::HashMap;
 use std::fs::{File,create_dir_all};
 use std::io::{Write};
+use ::autonomi::Client;
+use ::autonomi::client::address::str_to_addr;
+use ::autonomi::client::data::ChunkAddr;
+use ::autonomi::EvmNetwork::ArbitrumSepolia;
 use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
 use bytes::{Bytes};
 use async_stream::stream;
-use sn_client::{FilesApi, FilesDownload};
 use color_eyre::{Report, Result};
-use sn_client::protocol::storage::{Chunk, ChunkAddress};
 use tempfile::{tempdir};
 use futures::{StreamExt};
 use globset::{Glob};
 use awc::Client as AwcClient;
-
+use color_eyre::eyre::Context;
+use sn_evm::EvmWallet;
+use sn_protocol::storage::{Chunk, ChunkAddress};
 use crate::autonomi::Autonomi;
 use crate::proxy::Proxy;
 use crate::dns::Dns;
@@ -76,8 +80,9 @@ async fn main() -> std::io::Result<()> {
     let bind_socket_addr = app_config.bind_socket_addr;
 
     // initialise safe network connection and files api
-    let (client, files_api) = Autonomi::new(app_config.clone()).init().await;
-    let dns = Dns::new(client.clone(), app_config.clone().dns_register);
+    let autonomi_client = Autonomi::new(app_config.clone()).init().await;
+    let evm_wallet = EvmWallet::new_with_random_wallet(ArbitrumSepolia);
+    let dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
 
     HttpServer::new(move || {
         let logger = Logger::default();
@@ -89,10 +94,11 @@ async fn main() -> std::io::Result<()> {
             .route("/{path:.*}", web::get().to(get_safe_data_stream))
             //.service(get_account)
             .app_data(Data::new(app_config.clone()))
-            .app_data(Data::new(files_api.clone()))
-            .app_data(Data::new(client.clone()))
+            //.app_data(Data::new(files_api.clone()))
+            .app_data(Data::new(autonomi_client.clone()))
             .app_data(Data::new(AwcClient::default()))
             .app_data(Data::new(dns.clone()))
+            .app_data(Data::new(evm_wallet.clone()))
     })
         .bind(bind_socket_addr)?
         .run()
@@ -102,7 +108,8 @@ async fn main() -> std::io::Result<()> {
 async fn get_safe_data_stream(
     request: HttpRequest,
     path: web::Path<String>,
-    files_api_data: Data<FilesApi>,
+    //files_api_data: Data<FilesApi>,
+    autonomi_client_data: Data<Client>,
     conn: ConnectionInfo,
     payload: web::Payload,
     peer_addr: Option<PeerAddr>,
@@ -122,7 +129,8 @@ async fn get_safe_data_stream(
     }*/
 
     let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
-    let files_api = files_api_data.get_ref();
+    //let files_api = files_api_data.get_ref();
+    let autonomy_client = autonomi_client_data.get_ref().clone();
     let dns = dns_data.get_ref();
 
     info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
@@ -142,7 +150,7 @@ async fn get_safe_data_stream(
     };
 
     // load config from subdomain (of .autonomi) or path root
-    let config = match get_config(files_api.clone(), config_addr, resolved_config_addr).await {
+    let config = match get_config(autonomy_client.clone(), config_addr, resolved_config_addr).await {
         Ok(value) => value,
         Err(err) => return HttpResponse::InternalServerError()
             .body(format!("Failed to load config from map [{:?}]", err)),
@@ -163,9 +171,9 @@ async fn get_safe_data_stream(
     };
 
     // convert chunk address to xor_name
-    let xor_name = str_to_xor_name(&chunk_address).unwrap();
+    let xor_name = str_to_addr(&chunk_address).unwrap();
 
-    let mut files_download = FilesDownload::new(files_api.clone());
+    //let mut files_download = FilesDownload::new(files_api.clone());
 
     let (range_from, range_to, _) = get_range(&request);
 
@@ -183,19 +191,29 @@ async fn get_safe_data_stream(
             } else {
                 position_end - position_start
             };
-            match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
+
+            // todo: understand archives and how to download chunks separately
+            let archive = autonomy_client
+                .archive_get(xor_name)
+                .await
+                .unwrap();
+
+            let (_, addr, _) = archive.iter().next().unwrap(); // todo: get all elements in archive?
+            //match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
+            match autonomy_client.data_get(*addr).await {
                 Ok(data) => {
                     chunk_count += 1;
                     bytes_read = data.len();
                     info!("Read [{}] bytes from file position [{}] for XOR address [{}]", bytes_read, position_start, xor_name);
-                    yield Ok(data); // Yielding the chunk here
-                    if bytes_read < STREAM_CHUNK_SIZE {
+                    yield Ok(data.clone()); // Yielding the chunk here
+                    /*if bytes_read < STREAM_CHUNK_SIZE {
                         // If the last data chunk returned is smaller than the stream chunk size
                         // it indicates it is the last chunk in the sequence
                         info!("Last chunk [{}] read for XOR address [{}] - breaking", chunk_count, xor_name);
                         break;
                     }
-                    position_start += chunk_size;
+                    position_start += chunk_size;*/
+                    break; // todo: re-enable multi-chunk streams later
                 }
                 Err(e) => {
                     error!("Error reading file: {}", e);
@@ -246,9 +264,10 @@ fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
     }
 }
 
-async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) -> Result<HttpResponse, Error> {
+async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
     info!("Post file");
-    let files_api = files_api.get_ref().clone();
+    let autonomi_client = autonomi_client_data.get_ref().clone();
+    let evm_wallet = evm_wallet_data.get_ref().clone();
 
     info!("Creating temp file");
     let temp_dir = tempdir()?;
@@ -270,30 +289,12 @@ async fn post_safe_data(mut payload: web::Payload, files_api: Data<FilesApi>) ->
     let chunk_path = temp_dir.path().join("chunk_path");
     create_dir_all(chunk_path.clone())?;
 
-    info!("Chunking file");
-    let (head_address, _data_map, _file_size, chunks_paths) =
-        FilesApi::chunk_file(&file_path, &chunk_path, true).expect("failed to chunk file");
-
-    info!("Paying for chunks");
-    let mut pay_chunks = Vec::new();
-    for (pay_chunk_name, _) in chunks_paths.clone() {
-        info!("Paying for chunk: {}", pay_chunk_name.to_string());
-        pay_chunks.push(pay_chunk_name.clone());
-    }
-    let payments = files_api.pay_for_chunks(pay_chunks)
-        .await.expect("failed to pay for chunks");
-    info!("payments: stored [{}], royalties [{}]", payments.storage_cost, payments.royalty_fees);
-
     info!("Uploading chunks");
-    for (_chunk_name, chunk_path) in chunks_paths {
-        let chunk = Chunk::new(Bytes::from(fs::read(chunk_path)?));
-        files_api.get_local_payment_and_upload_chunk(chunk, false, None)
-            .await.expect("failed to get local payment and upload chunk")
-    }
+    let data_addr = autonomi_client.data_put(Bytes::from(fs::read(chunk_path)?), evm_wallet_data.get_ref()).await.unwrap();
 
-    info!("Successfully uploaded data at [{}]", head_address.to_hex());
+    info!("Successfully uploaded data at [{}]", data_addr);
     Ok(HttpResponse::Ok()
-        .body(head_address.to_hex()))
+        .body(data_addr.to_string()))
 }
 
 // todo: understand what I was trying to do here 3 years ago... :)
@@ -448,16 +449,20 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     }
 }
 
-async fn get_config(files_api: FilesApi, config_addr: String, resolved_config_addr: String) -> Result<Config> {
+//async fn get_config(files_api: FilesApi, config_addr: String, resolved_config_addr: String) -> Result<Config> {
+async fn get_config(autonomi_client: Client, config_addr: String, resolved_config_addr: String) -> Result<Config> {
     if config_addr != SAFE_PATH && config_addr != "" {
-        let mut files_download = FilesDownload::new(files_api.clone());
+        //let mut files_download = FilesDownload::new(autonomy_client.clone());
 
         let config_xor_name = str_to_xor_name(&resolved_config_addr)
             .unwrap_or_else(|_| XorName::default());
-        let chunk_addr = ChunkAddress::new(config_xor_name);
-        let data = files_download.download_file(chunk_addr, None).await?;
+        //let chunk_addr = ChunkAddress::new(config_xor_name);
+        //let data = files_download.download_file(chunk_addr, None).await?;
+        let chunk_addr = ChunkAddr::from_content(config_xor_name.as_ref());
+        let data = autonomi_client.chunk_get(chunk_addr).await?;
 
-        let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+        //let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+        let json = String::from_utf8(data.value().to_vec()).unwrap_or(String::new());
         let config: Config = serde_json::from_str(&json).expect("Failed to parse json config");
 
         Ok(config)

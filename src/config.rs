@@ -2,13 +2,13 @@ use std::env::args;
 use std::net::SocketAddr;
 use anyhow::anyhow;
 use log::info;
-use multiaddr::Multiaddr;
+use url::Url;
 
 #[derive(Clone)]
 pub struct AppConfig {
     pub bind_socket_addr: SocketAddr,
     pub static_dir: String,
-    pub network_peer_addr: Multiaddr,
+    pub network_peer_url: Url,
     pub dns_register: String
 }
 
@@ -34,10 +34,10 @@ impl AppConfig {
         // Read the network contact peer multiaddr from third arg passed
         let network_contact = args_received
             .next().expect("No Safe network peer address provided");
-        let network_peer_addr: Multiaddr = network_contact
-            .parse::<Multiaddr>()
-            .map_err(|err| anyhow!("Invalid Safe network peer address: {}", err)).unwrap();
-        info!("Safe network to be contacted: [{}]", network_peer_addr);
+        let network_peer_url: Url = network_contact
+            .parse::<Url>()
+            .map_err(|err| anyhow!("Invalid Safe network peer URL: {}", err)).unwrap();
+        info!("Safe network to be contacted: [{}]", network_peer_url);
 
         // Read the network contact socket address from second arg passed
         let dns_register = args_received
@@ -47,7 +47,7 @@ impl AppConfig {
         Ok(AppConfig {
             bind_socket_addr,
             static_dir,
-            network_peer_addr,
+            network_peer_url,
             dns_register
         })
     }

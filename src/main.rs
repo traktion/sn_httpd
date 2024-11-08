@@ -108,7 +108,6 @@ async fn main() -> std::io::Result<()> {
 async fn get_safe_data_stream(
     request: HttpRequest,
     path: web::Path<String>,
-    //files_api_data: Data<FilesApi>,
     autonomi_client_data: Data<Client>,
     conn: ConnectionInfo,
     payload: web::Payload,
@@ -129,7 +128,6 @@ async fn get_safe_data_stream(
     }*/
 
     let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
-    //let files_api = files_api_data.get_ref();
     let autonomy_client = autonomi_client_data.get_ref().clone();
     let dns = dns_data.get_ref();
 
@@ -170,12 +168,61 @@ async fn get_safe_data_stream(
             .body(format!("Failed to resolve path [{:?}]", err)),
     };
 
+    let (range_from, range_to, _) = get_range(&request);
+
+    download_data_body(chunk_address, is_resolved_file_name, autonomy_client, range_from, range_to).await
+}
+
+async fn download_data_body(
+    chunk_address: String,
+    is_resolved_file_name: bool,
+    autonomi_client: Client,
+    range_from: u64,
+    range_to: u64
+) -> HttpResponse {
     // convert chunk address to xor_name
     let xor_name = str_to_addr(&chunk_address).unwrap();
 
-    //let mut files_download = FilesDownload::new(files_api.clone());
+    let mut chunk_count = 0;
+    #[allow(unused_assignments)]
+    let mut bytes_read = 0;
 
-    let (range_from, range_to, _) = get_range(&request);
+    // todo: get first chunk synchronously + if bytes < STREAM_CHUNK_SIZE, return non-chunked response
+
+    // todo: understand archives and how to download chunks separately
+    let archive = autonomi_client
+        .archive_get(xor_name)
+        .await
+        .unwrap();
+
+    let (_, addr, _) = archive.iter().next().unwrap(); // todo: get all elements in archive?
+    info!("Downloading item [{}] from archive [{}]", addr, xor_name);
+    match autonomi_client.data_get(*addr).await {
+        Ok(data) => {
+            chunk_count += 1;
+            bytes_read = data.len();
+            info!("Read [{}] bytes of item [{}] from archive [{}]", bytes_read, addr, xor_name);
+            HttpResponse::Ok()
+                .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
+                .body(data)
+        }
+        Err(e) => {
+            HttpResponse::InternalServerError().body(format!("Failed to download [{:?}]", e))
+        }
+    }
+}
+
+fn download_data_stream(
+    chunk_address: String,
+    is_resolved_file_name: bool,
+    autonomi_client: Client,
+    range_from: u64,
+    range_to: u64
+) -> impl Responder {
+    // todo: When the XOR address is not found, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
+
+    // convert chunk address to xor_name
+    let xor_name = str_to_addr(&chunk_address).unwrap();
 
     let mut chunk_count = 0;
     let mut position_start: usize = u64::try_into(range_from).unwrap();
@@ -185,27 +232,30 @@ async fn get_safe_data_stream(
 
     // todo: get first chunk synchronously + if bytes < STREAM_CHUNK_SIZE, return non-chunked response
     let data_stream = stream! {
-        loop {
-            let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
+        //loop {
+            /*let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
                 STREAM_CHUNK_SIZE
             } else {
                 position_end - position_start
-            };
+            };*/
 
             // todo: understand archives and how to download chunks separately
-            let archive = autonomy_client
+            let archive = autonomi_client
                 .archive_get(xor_name)
                 .await
                 .unwrap();
 
             let (_, addr, _) = archive.iter().next().unwrap(); // todo: get all elements in archive?
+            info!("Downloading item [{}] from archive [{}]", addr, xor_name);
             //match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
-            match autonomy_client.data_get(*addr).await {
+            match autonomi_client.data_get(*addr).await {
                 Ok(data) => {
                     chunk_count += 1;
                     bytes_read = data.len();
-                    info!("Read [{}] bytes from file position [{}] for XOR address [{}]", bytes_read, position_start, xor_name);
+                    info!("Read [{}] bytes from file position [{}] of item [{}] from archive [{}]", bytes_read, position_start, addr, xor_name);
                     yield Ok(data.clone()); // Yielding the chunk here
+
+                    // todo: re-enable multi-chunk streams later
                     /*if bytes_read < STREAM_CHUNK_SIZE {
                         // If the last data chunk returned is smaller than the stream chunk size
                         // it indicates it is the last chunk in the sequence
@@ -213,20 +263,19 @@ async fn get_safe_data_stream(
                         break;
                     }
                     position_start += chunk_size;*/
-                    break; // todo: re-enable multi-chunk streams later
                 }
                 Err(e) => {
                     error!("Error reading file: {}", e);
                     yield Err(e);
-                    break;
+                    //break; // todo: re-enable multi-chunk streams later
                 }
             }
-        }
+        //}
     };
 
     // todo: When there is only 1 known chunk, we could use body (with 'content-length: x') instead of
     //       streaming (with 'transfer-encoding: chunked') to improve performance.
-    return if request.headers().contains_key("Range") {
+    /*if request.headers().contains_key("Range") {
         let real_range_size: u64 = if position_end - position_start > STREAM_CHUNK_SIZE {
             STREAM_CHUNK_SIZE.try_into().unwrap()
         } else {
@@ -237,12 +286,11 @@ async fn get_safe_data_stream(
             .insert_header(ContentRange(ContentRangeSpec::Bytes {range: Some((range_from, range_from + real_range_size)), instance_length: None}))
             .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
             .streaming(data_stream)
-    } else {
-        HttpResponse::Ok()
-            .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
-            .streaming(data_stream)
-    }
-    // todo: When the XOR address is not found, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
+    } else {*/
+    HttpResponse::Ok()
+        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
+        .streaming(data_stream)
+    //}
 }
 
 fn get_range(request: &HttpRequest) -> (u64, u64, u64) {

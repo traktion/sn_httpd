@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use autonomi::Client;
 use log::info;
-//use sn_client::{Client, ClientEventsBroadcaster, FilesApi};
 use sn_peers_acquisition::get_peers_from_url;
 use sn_transfers::bls::SecretKey;
 use sn_transfers::bls_secret_from_hex;
@@ -25,19 +24,12 @@ impl Autonomi {
     pub async fn init(&self) -> Client {
         // initialise safe network connection and files api
         let client = self.safe_connect(&self.app_config.network_peer_url).await.expect("Failed to connect to Safe Network");
-        let data_dir_path = self.get_client_data_dir_path().expect("Failed to get client data dir path");
-        //let files_api = FilesApi::new(client.clone(), data_dir_path);
-        //(client, files_api)
         client
     }
 
     async fn safe_connect(&self, peer_url: &Url) -> color_eyre::Result<Client> {
         // note: this was pulled directly from sn_cli
 
-        //println!("Instantiating a SAFE client...");
-        //let secret_key = self.get_client_secret_key(&self.get_client_data_dir_path()?)?;
-
-        //let peer_args = PeersArgs { first: false, peers: vec![peer.clone()] };
         let bootstrap_peers = get_peers_from_url(peer_url.clone()).await?;
 
         println!(
@@ -45,23 +37,7 @@ impl Autonomi {
             bootstrap_peers.len(),
         );
 
-        /*let bootstrap_peers = if bootstrap_peers.is_empty() {
-            // empty vec is returned if `local-discovery` flag is provided
-            None
-        } else {
-            Some(bootstrap_peers)
-        };*/
-
-        // get the broadcaster as we want to have our own progress bar.
-        //let broadcaster = ClientEventsBroadcaster::default();
-
         let result = Client::connect(&bootstrap_peers).await?;
-        /*let result = Client::new(
-            secret_key,
-            bootstrap_peers,
-            None,
-            Some(broadcaster),
-        ).await?;*/
         Ok(result)
     }
 

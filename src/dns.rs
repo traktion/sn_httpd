@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use autonomi::Client;
 use autonomi::client::registers::RegisterAddress;
+use color_eyre::eyre::eyre;
+use color_eyre::Report;
 use log::{debug, info};
 use sn_transfers::bls;
 use sn_transfers::bls::PublicKey;
@@ -8,18 +11,20 @@ use xor_name::XorName;
 #[derive(Clone)]
 pub struct Dns {
     dns_register: String,
-    client: Client
+    client: Client,
+    cache: HashMap<String, String>
 }
 
 impl Dns {
     pub fn new(client: Client, dns_register: String) -> Self {
         Self {
             dns_register,
-            client
+            client,
+            cache: HashMap::new()
         }
     }
 
-    pub async fn resolve(&self, addr: String, use_name: bool) -> color_eyre::Result<String> {
+    pub async fn resolve_direct(&self, addr: String, use_name: bool) -> color_eyre::Result<String> {
         let secret_key = bls::SecretKey::random(); // todo: get owner's key
         let public_key = secret_key.public_key();
         let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, public_key)?;
@@ -68,18 +73,77 @@ impl Dns {
                     }
                 }
                 info!("Did not find DNS entry for [{}]", addr);
-                Ok(addr.to_string())
+                Err(Report::msg(addr.to_string()))
             }
             Err(error) => {
                 info!(
-                "Did not retrieve DNS register [{}] with error [{}]",
-                printing_name, error
-            );
+                    "Did not retrieve DNS register [{}] with error [{}]",
+                    printing_name, error
+                );
                 return Err(error.into());
             }
         }
     }
 
+    pub async fn resolve(&self, key: String, use_name: bool) -> color_eyre::Result<String> {
+       match self.cache.contains_key(&key) {
+           true => {
+               let value = self.cache.get(&key).unwrap().clone();
+               info!("Resolved [{}] to [{}] from DNS cache", key, value);
+               Ok(value)
+           },
+           false => {
+               self.resolve_direct(key, use_name).await
+           }
+       }
+    }
+
+    pub async fn load_cache(&mut self, use_name: bool) {
+        let secret_key = bls::SecretKey::random(); // todo: get owner's key
+        let public_key = secret_key.public_key();
+        let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, public_key).unwrap();
+
+        info!("Trying to retrieve DNS register [{}]", printing_name);
+
+        match self.client.register_get(address).await {
+            Ok(register) => {
+                debug!("Successfully retrieved DNS register [{}]", printing_name);
+
+                let entries = register.clone().values();
+
+                // print all entries
+                for entry in entries.clone() {
+                    let entry_data = entry.to_vec();
+                    let data_str = String::from_utf8(entry_data.clone()).unwrap_or_else(|_| format!("{entry_data:?}"));
+                    debug!("Entry - data: [{}]", data_str);
+
+                    let Some((name, data)) = data_str.split_once(',') else { continue };
+
+                    debug!("Found DNS entry - name [{}], data: [{}]", name, data);
+                    let (dns_address, _) = self.parse_addr(&data, false, public_key.clone()).unwrap();
+                    match self.client.register_get(dns_address).await {
+                        Ok(site_register) => {
+                            let entry = site_register.clone().values();
+                            let site_entry_data = entry.last().expect("Failed to retrieve latest site register entry").to_vec();
+                            let site_data_str = String::from_utf8(site_entry_data.clone()).unwrap_or_else(|_| format!("{site_entry_data:?}"));
+                            info!("Adding site register entry [{}]->[{}] to cache", name, site_data_str);
+                            self.cache.insert(name.to_string(), site_data_str.clone());
+                        },
+                        Err(_) => {
+                            continue
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                info!(
+                    "Did not retrieve DNS register [{}] with error [{}]",
+                    printing_name, error
+                );
+                return
+            }
+        }
+    }
 
     fn parse_addr(
         &self,

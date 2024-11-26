@@ -15,12 +15,12 @@ integrate with Autonomi in a more conventional way and gives end users a convent
 
 `sn_httpd` currently provides the following:
 
-- Data retrieval from Autonomi using `/safe/[XOR_ADDRESS]`. Data is streamed directly from Autonomi to reduce
+- Data retrieval from Autonomi using `/xor/[XOR_ADDRESS]`. Data is streamed directly from Autonomi to reduce
   latency and allows clients to immediately consume the data.
-- Data retrieval from Autonomic using file maps for human readable naming `/[MAP_XOR_ADDRESS]/[MY_FILE_NAME]`. Enables
-  regular static sites to be uploaded/browsed (once a fileMap is provided - see [example-config](app-config.json).
+- Data retrieval from Autonomic using archives for human readable naming `/[ARCHIVE_XOR_ADDRESS]/[MY_FILE_NAME]`. Enables
+  regular static sites to be uploaded as an archive, with files browsed by file name.
 - Routing from URLs to specific `[XOR_ADDRESS]` or `[FILE_NAME]`. Enables SPA (single page apps) such as Angular or
-  React to be hosted (once a routeMap is provided - see [example-config](app-config.json)
+  React to be hosted (once a routeMap is provided - see [example-config](app-conf.json) (DISABLED TEMPORARILY!)
 - Experimental support for DNS style lookups, using registers to provide `/[DNS_NAME]/[MY_FILE_NAME]`. More to follow!
 - Hosting of conventional static files using `/static`.
 - Native integration of the `sn_client` libraries into Actix web framework. These are both written in Rust to provide
@@ -95,9 +95,31 @@ Where:
 - `https://sn-testnet.s3.eu-west-2.amazonaws.com/network-contacts` is a URL containing a list of peer addresses.
 - `4b4a0fa14f00ffdcc2c3dabef49721bdde81e9263cde5e2f4885459685d1f75d9099ecd71284c151e2a835e01b9a3847ea9676560620b9c038f9c6d623384ab1359ebd7ed1ff8add5c8d6e81d75d2742` is a `DNS_REGISTER`.
 
+### Archive Upload
+
+To upload a current directory to Autonomi as an archive, do the following:
+
+- `cd your/directory`
+- `autonomi file upload -p -x ./`
+
+This command will return information about the uploads and summarise with something like:
+
+`Uploading file: "./1_bYTCL7G4KbcR_Y4rd78OhA.png"
+Upload completed in 5.57326318s
+Successfully uploaded: ./
+At address: 387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787`
+
+The 'At address' is the archive address and you can now reference the uploaded files like:
+
+Via a proxy with DNS set to 6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dda43d61a01fd64bc32265b41842ad4c8ef51b22748de068f550e39ebf88495a3e99c4481019d10ad513d0157fb2e679b3:
+`http://traktion.autonomi/1_bYTCL7G4KbcR_Y4rd78OhA.png` 
+
+Or via direct request:
+`http://localhost:8082/387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg`
+
 ### App Configuration
 
-See [example-config](app-config.json) for customising how your web site/app behaves on `sn_httpd`.
+See [example-config](app-conf.json) for customising how your web site/app behaves on `sn_httpd`.
 
 The config should be uploaded to Autonomi and the corresponding `XOR_ADDRESS` can then be used as the site root,
 e.g. `/[XOR_ADDRESS]/[OTHER_FILES]`. The config can have any file name as only the XOR address is important to `sn_httpd`.
@@ -110,21 +132,21 @@ interface has been finalised, to allow register history to be retrieved.
 
 To create a site register (for the specific site/app):
 
-`safe register create [SITE_REGISTER]`
+`autonomi register create [SITE_REGISTER]`
 
 To point the register at your App Configuration:
 
-`safe register edit [SITE_REGISTER] [CONFIG_XOR_ADDRESS]`
+`autonomi register edit [SITE_REGISTER] [CONFIG_XOR_ADDRESS]`
 
 When the App Configuration is updated, repeat the above with its new XOR address.
 
 To create a DNS register for the `sn_httpd` instance, use the CLI:
 
-`safe register create [DNS_REGISTER]`
+`autonomi register create [DNS_REGISTER]`
 
 To add/edit a name, edit the register to append the site register:
 
-`safe register edit [REGISTER_ADDRESS] "[APP_NAME],[APP_ADDRESS]"`
+`autonomi register edit [REGISTER_ADDRESS] "[APP_NAME],[APP_ADDRESS]"`
 
 Once completed, `/[APP_NAME]` will resolve to the App Configuration and any path after this point will reference
 the App Configuration, e.g. with `/myapp/myfile`, `myfile` can be in the `dataMap` and route to an XOR address.

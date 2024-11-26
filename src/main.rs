@@ -7,16 +7,18 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logge
 use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec};
 use actix_files::Files;
 use xor_name::XorName;
-use log::{info, error, debug};
+use log::{info, error, debug, warn};
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::{fs};
 use std::collections::HashMap;
 use std::fs::{File,create_dir_all};
-use std::io::{Write};
+use std::io::{empty, Write};
+use std::path::PathBuf;
 use ::autonomi::Client;
 use ::autonomi::client::address::str_to_addr;
-use ::autonomi::client::data::ChunkAddr;
+use ::autonomi::client::archive::{Archive, ArchiveAddr};
+use ::autonomi::client::data::{ChunkAddr, DataAddr};
 use ::autonomi::EvmNetwork::ArbitrumSepolia;
 use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
@@ -37,27 +39,8 @@ use crate::config::AppConfig;
 
 const CLIENT_KEY: &str = "clientkey";
 const STREAM_CHUNK_SIZE: usize = 2048 * 1024;
-const SAFE_PATH: &str = "safe";
+const XOR_PATH: &str = "xor";
 const PROXY_ENABLED: bool = false;
-
-/*#[derive(Clone, Default)]
-struct Accounts {
-    accounts: HashMap<String, Site>
-}*/
-
-/*#[derive(Clone)]
-struct Site {
-    configurl: String,
-    keyxorurl: String,
-    //keypair: Keypair,
-    credit: i64,
-    usage: i64
-}*/
-
-/*#[derive(Clone)]
-struct Urls {
-    urls: HashMap<String, Site>
-}*/
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +65,10 @@ async fn main() -> std::io::Result<()> {
     // initialise safe network connection and files api
     let autonomi_client = Autonomi::new(app_config.clone()).init().await;
     let evm_wallet = EvmWallet::new_with_random_wallet(ArbitrumSepolia);
-    let dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
+    let mut dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
+    dns.load_cache(false).await;
+
+    info!("Starting listener");
 
     HttpServer::new(move || {
         let logger = Logger::default();
@@ -90,8 +76,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(logger)
             .service(Files::new("/static", app_config.static_dir.clone()))
-            .route("/safe", web::post().to(post_safe_data))
-            .route("/{path:.*}", web::get().to(get_safe_data_stream))
+            .route("/xor", web::post().to(post_safe_data))
+            .route("/{path:.*}", web::get().to(get_safe_data))
             //.service(get_account)
             .app_data(Data::new(app_config.clone()))
             //.app_data(Data::new(files_api.clone()))
@@ -105,14 +91,11 @@ async fn main() -> std::io::Result<()> {
         .await
 }
 
-async fn get_safe_data_stream(
+async fn get_safe_data(
     request: HttpRequest,
     path: web::Path<String>,
     autonomi_client_data: Data<Client>,
     conn: ConnectionInfo,
-    payload: web::Payload,
-    peer_addr: Option<PeerAddr>,
-    awc_client: web::Data<AwcClient>,
     dns_data: Data<Dns>,
 ) -> impl Responder {
     // todo: fix build issue with aarch64 when the proxy is included
@@ -127,170 +110,118 @@ async fn get_safe_data_stream(
         }
     }*/
 
-    let (config_addr, relative_path) = get_config_and_relative_path(&conn.host(), &path.into_inner());
-    let autonomy_client = autonomi_client_data.get_ref().clone();
+    let path_parts = get_path_parts(&conn.host(), &path.into_inner());
+    let (archive_name, archive_file_name) = assign_path_parts(path_parts);
+    let autonomi_client = autonomi_client_data.get_ref().clone();
     let dns = dns_data.get_ref();
 
-    info!("config_addr [{}], relative_path [{}]", config_addr, relative_path);
+    info!("archive_name [{}], archive_file_name [{}]", archive_name, archive_file_name);
 
     // resolve chunk address for config using DNS
-    let resolved_config_addr = match resolve_chunk_address(dns.clone(), &config_addr).await {
+    let archive_addr = match resolve_chunk_address(dns.clone(), &archive_name).await {
         Ok(value) => value,
-        Err(_) => return HttpResponse::InternalServerError()
-            .body(format!("Failed to resolve DNS name [{:?}]", config_addr)),
+        Err(_) => return HttpResponse::NotFound()
+            .body(format!("Failed to resolve DNS name [{:?}]", archive_name)),
     };
 
-    // if the app-config.json is being looked up, copy the resolved chunk address of the config
-    let resolved_relative_path = if relative_path == "app-config.json" {
-        resolved_config_addr.clone()
+    let (archive, is_archive, xor_addr) = if archive_addr.to_lowercase() != XOR_PATH {
+        let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
+        match autonomi_client.archive_get(archive_addr_xorname).await {
+            Ok(value) => {
+                info!("Found archive at [{:x}]", archive_addr_xorname);
+                (value, true, archive_addr_xorname)
+            },
+            Err(_) => {
+                info!("No archive found at [{:x}]. Treating as XOR address", archive_addr_xorname);
+                (Archive::new(), false, archive_addr_xorname)
+            }
+        }
+    } else if is_xor(&archive_file_name) {
+        let archive_file_name_xorname = str_to_xor_name(&archive_file_name).unwrap();
+        info!("Found XOR address [{:x}]", archive_file_name_xorname);
+        (Archive::new(), false, archive_file_name_xorname)
     } else {
-        relative_path.clone()
+        warn!("Failed to download [{:?}]", archive_file_name);
+        return HttpResponse::NotFound().body(format!("Failed to download [{:?}]", archive_file_name));
     };
 
-    // load config from subdomain (of .autonomi) or path root
-    let config = match get_config(autonomy_client.clone(), config_addr, resolved_config_addr).await {
-        Ok(value) => value,
-        Err(err) => return HttpResponse::InternalServerError()
-            .body(format!("Failed to load config from map [{:?}]", err)),
-    };
+    if (is_archive) {
+        info!("Retrieving file from archive [{:x}]", xor_addr);
 
-    // resolve route
-    let resolved_relative_path = match resolve_route(resolved_relative_path, config.clone()) {
-        Ok(value) => value,
-        Err(err) => return HttpResponse::InternalServerError()
-            .body(format!("Failed to resolve route [{:?}]", err)),
-    };
+        /*// load config from subdomain (of .autonomi) or path root
+        let config = match get_config(archive.clone(), autonomi_client.clone(), archive_addr).await {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("Failed to load config from map [{:?}]", err);
+                return HttpResponse::InternalServerError()
+                    .body(format!("Failed to load config from map [{:?}]", err))
+            },
+        };
 
-    // resolve file name to chunk address
-    let (is_resolved_file_name, chunk_address) = match resolve_file_name(config, resolved_relative_path) {
-        Ok(value) => value,
-        Err(err) => return HttpResponse::NotFound()
-            .body(format!("Failed to resolve path [{:?}]", err)),
-    };
+        // resolve route
+        let resolved_relative_path_route = match resolve_route(archive_file_name, config.clone()) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("Failed to resolve route [{:?}]", err);
+                return HttpResponse::InternalServerError()
+                    .body(format!("Failed to resolve route [{:?}]", err))
+            },
+        };*/
 
-    let (range_from, range_to, _) = get_range(&request);
+        let resolved_relative_path_route = archive_file_name.clone();
 
-    download_data_body(chunk_address, is_resolved_file_name, autonomy_client, range_from, range_to).await
-}
-
-async fn download_data_body(
-    chunk_address: String,
-    is_resolved_file_name: bool,
-    autonomi_client: Client,
-    range_from: u64,
-    range_to: u64
-) -> HttpResponse {
-    // convert chunk address to xor_name
-    let xor_name = str_to_addr(&chunk_address).unwrap();
-
-    let mut chunk_count = 0;
-    #[allow(unused_assignments)]
-    let mut bytes_read = 0;
-
-    // todo: get first chunk synchronously + if bytes < STREAM_CHUNK_SIZE, return non-chunked response
-
-    // todo: understand archives and how to download chunks separately
-    let archive = autonomi_client
-        .archive_get(xor_name)
-        .await
-        .unwrap();
-
-    let (_, addr, _) = archive.iter().next().unwrap(); // todo: get all elements in archive?
-    info!("Downloading item [{}] from archive [{}]", addr, xor_name);
-    match autonomi_client.data_get(*addr).await {
-        Ok(data) => {
-            chunk_count += 1;
-            bytes_read = data.len();
-            info!("Read [{}] bytes of item [{}] from archive [{}]", bytes_read, addr, xor_name);
-            HttpResponse::Ok()
-                .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
-                .body(data)
-        }
-        Err(e) => {
-            HttpResponse::InternalServerError().body(format!("Failed to download [{:?}]", e))
-        }
+        // resolve file name to chunk address
+        let (path_str, data_addr) = if is_xor(&resolved_relative_path_route) {
+            let path_str = resolved_relative_path_route.clone();
+            let data_addr = str_to_xor_name(&resolved_relative_path_route).unwrap();
+            info!("Resolved path is XOR address [{}]", resolved_relative_path_route);
+            (path_str, data_addr)
+        } else {
+            let path_str = "./".to_string() + resolved_relative_path_route.as_str().clone();
+            let path_buf = &PathBuf::from(path_str.clone());
+            let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_buf) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("{:?}", err);
+                    return HttpResponse::NotFound()
+                        .body(format!("{:?}", err))
+                }
+            };
+            info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
+            (path_str, data_addr)
+        };
+        download_data_body(path_str, data_addr, true, autonomi_client).await
+    } else {
+        // autonomi XOR addr
+        info!("Retrieving file from [{:x}]", xor_addr);
+        download_data_body(archive_addr, xor_addr, false, autonomi_client).await
     }
 }
 
-fn download_data_stream(
-    chunk_address: String,
+async fn download_data_body(
+    path_str: String,
+    xor_name: DataAddr,
     is_resolved_file_name: bool,
-    autonomi_client: Client,
-    range_from: u64,
-    range_to: u64
-) -> impl Responder {
-    // todo: When the XOR address is not found, return a 404 instead of falling back on ERR_INCOMPLETE_CHUNKED_ENCODING
-
-    // convert chunk address to xor_name
-    let xor_name = str_to_addr(&chunk_address).unwrap();
-
+    autonomi_client: Client
+) -> HttpResponse {
     let mut chunk_count = 0;
-    let mut position_start: usize = u64::try_into(range_from).unwrap();
-    let position_end: usize = u64::try_into(range_to).unwrap();
     #[allow(unused_assignments)]
     let mut bytes_read = 0;
 
-    // todo: get first chunk synchronously + if bytes < STREAM_CHUNK_SIZE, return non-chunked response
-    let data_stream = stream! {
-        //loop {
-            /*let chunk_size = if position_end - position_start > STREAM_CHUNK_SIZE {
-                STREAM_CHUNK_SIZE
-            } else {
-                position_end - position_start
-            };*/
-
-            // todo: understand archives and how to download chunks separately
-            let archive = autonomi_client
-                .archive_get(xor_name)
-                .await
-                .unwrap();
-
-            let (_, addr, _) = archive.iter().next().unwrap(); // todo: get all elements in archive?
-            info!("Downloading item [{}] from archive [{}]", addr, xor_name);
-            //match files_download.download_from(ChunkAddress::new(xor_name), position_start, chunk_size).await {
-            match autonomi_client.data_get(*addr).await {
-                Ok(data) => {
-                    chunk_count += 1;
-                    bytes_read = data.len();
-                    info!("Read [{}] bytes from file position [{}] of item [{}] from archive [{}]", bytes_read, position_start, addr, xor_name);
-                    yield Ok(data.clone()); // Yielding the chunk here
-
-                    // todo: re-enable multi-chunk streams later
-                    /*if bytes_read < STREAM_CHUNK_SIZE {
-                        // If the last data chunk returned is smaller than the stream chunk size
-                        // it indicates it is the last chunk in the sequence
-                        info!("Last chunk [{}] read for XOR address [{}] - breaking", chunk_count, xor_name);
-                        break;
-                    }
-                    position_start += chunk_size;*/
-                }
-                Err(e) => {
-                    error!("Error reading file: {}", e);
-                    yield Err(e);
-                    //break; // todo: re-enable multi-chunk streams later
-                }
-            }
-        //}
-    };
-
-    // todo: When there is only 1 known chunk, we could use body (with 'content-length: x') instead of
-    //       streaming (with 'transfer-encoding: chunked') to improve performance.
-    /*if request.headers().contains_key("Range") {
-        let real_range_size: u64 = if position_end - position_start > STREAM_CHUNK_SIZE {
-            STREAM_CHUNK_SIZE.try_into().unwrap()
-        } else {
-            (position_end - position_start).try_into().unwrap()
-        };
-
-        HttpResponse::PartialContent()
-            .insert_header(ContentRange(ContentRangeSpec::Bytes {range: Some((range_from, range_from + real_range_size)), instance_length: None}))
-            .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
-            .streaming(data_stream)
-    } else {*/
-    HttpResponse::Ok()
-        .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&chunk_address, is_resolved_file_name))]))
-        .streaming(data_stream)
-    //}
+    info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
+    match autonomi_client.data_get(xor_name).await {
+        Ok(data) => {
+            chunk_count += 1;
+            bytes_read = data.len();
+            info!("Read [{}] bytes of item [{}] at addr [{}]", bytes_read, path_str, format!("{:x}", xor_name));
+            HttpResponse::Ok()
+                .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&format!("{:x}", xor_name), is_resolved_file_name))]))
+                .body(data)
+        }
+        Err(e) => {
+            HttpResponse::NotFound().body(format!("Failed to download [{:?}]", e))
+        }
+    }
 }
 
 fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
@@ -345,137 +276,51 @@ async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Cl
         .body(data_addr.to_string()))
 }
 
-// todo: understand what I was trying to do here 3 years ago... :)
-/*#[get("/account/{xor}")]
-async fn get_account(path: web::Path<String>, app_config: web::Data<AppConfig>, accounts: web::Data<Mutex<Accounts>>, urls: web::Data<Mutex<Urls>>) -> impl Responder {
-    let xor_str = path.into_inner();
-    let xor_name = str_to_xor_name(&xor_str);
-    let safe_url = format!("safe://{}", xor_str);
-
-    let mut client = safe_connect().await;
-    if let err = Err(client).is_err() {
-        error!("Failed to connect to Safe Network [{:?}]", err);
-        return HttpResponse::InternalServerError()
-            .body(format!("Failed to connect to Safe Network [{:?}]", err))
-    };
-
-    let files_api = match FilesApi::build(client.clone(), Path::new("./").to_path_buf()) {
-        Ok(data) => {
-            data
-        }
-        Err(err) => {
-            error!("Failed to instantiate FilesApi for Safe Network [{:?}]", err);
-            return HttpResponse::InternalServerError()
-                .body(format!("Failed to instantiate FilesApi for Safe Network [{:?}]", err))
-        }
-    };
-
-    // todo: check defaults are good
-    let mut files_download = FilesDownload::new(files_api.clone());
-
-    // todo: get events
-    //let mut download_events_rx = files_download.get_events();
-
-    // todo: stream chunks as they come in to improve performance
-    return match files_download.download_from(ChunkAddress::new(xor_name), 0, usize::MAX).await {
-        Ok(data) => {
-            info!("Successfully retrieved data at [{}]!", safe_url);
-
-            for (key, value) in accounts.lock().await.accounts.iter() {
-                info!("Accounts - {}: {}", key, value.keyxorurl);
-            }
-
-            for (key, value) in urls.lock().await.urls.iter() {
-                info!("URLs - {}: {}", key, value.keyxorurl);
-            }
-
-            if !accounts.lock().await.accounts.contains_key(&safe_url) {
-                info!("Site does not exist. Creating [{}]", safe_url);
-                let (key_xorurl, key_pair): (String, Keypair) = match safe.keys_create_and_preload("0.000000001").await {
-                    Ok(data) => data,
-                    Err(err) => {
-                        error!("Failed to create key [{:?}]", err);
-                        return HttpResponse::InternalServerError()
-                            .body(format!("Failed to create key [{:?}]", err))
-                    }
-                };
-                let site = Site {
-                    configurl: safe_url.clone(),
-                    keyxorurl: key_xorurl.clone(),
-                    keypair: key_pair,
-                    credit: 0,
-                    usage: 0
-                };
-                // associate site with requested safe_url for config
-                accounts.lock().await.accounts.insert(safe_url.clone(), site.clone());
-                urls.lock().await.urls.insert(safe_url.clone(), site.clone());
-                info!("Added site [{}]", safe_url);
-
-                let json = String::from_utf8(data).unwrap_or(String::new());
-                let c: Config = serde_json::from_str(&json).unwrap(); // todo: error handling
-                for url in c.urls.iter() {
-                    // associate urls in config with site
-                    urls.lock().await.urls.insert(url.clone(), site.clone());
-                    info!("Added URL [{}] to site [{:?}]", url, site.configurl);
-                }
-
-                for (key, value) in accounts.lock().await.accounts.iter() {
-                    info!("Accounts - {}: {}", key, value.keyxorurl);
-                }
-
-                for (key, value) in urls.lock().await.urls.iter() {
-                    info!("URLs - {}: {}", key, value.keyxorurl);
-                }
-
-                HttpResponse::Ok()
-                    .body(format!("Account created. Send coins here to fund account: [{}]", key_xorurl))
-            } else {
-                if let Some(site) = accounts.lock().await.accounts.get(&safe_url) {
-                    HttpResponse::Ok()
-                        .body(format!("Account exists. Send coins here to fund account: [{}]", site.keyxorurl))
-                } else {
-                    HttpResponse::InternalServerError()
-                        .body(format!("Failed to retrieve site details for URL [{}]", safe_url))
-                }
-            }
-        }
-        Err(err) => {
-            warn!("Failed to retrieve data at [{}]: {:?}", safe_url, err);
-            HttpResponse::NotFound()
-                .body(format!("Failed to retrieve data at [{}]: {:?}", safe_url, err))
-        },
-    }
-}*/
-
-fn get_config_and_relative_path(hostname: &str, path: &str) -> (String, String) {
+fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
     // assert: subdomain.autonomi as acceptable format
-    return if hostname.ends_with(".autonomi") {
-        let subdomain = hostname.split_once(".").unwrap().0.to_string();
-        (subdomain, path.to_string())
+    if hostname.ends_with(".autonomi") {
+        let mut subdomain_parts = hostname.split(".")
+            .map(str::to_string)
+            .collect::<Vec<String>>();
+        subdomain_parts.pop(); // discard 'autonomi' suffix
+        let path_parts = path.split("/")
+            .map(str::to_string)
+            .collect::<Vec<String>>();
+        subdomain_parts.append(&mut path_parts.clone());
+        subdomain_parts
     } else {
-        if path.contains("/") {
-            let (part1, part2) = path.split_once("/").unwrap();
-            (part1.to_string(), part2.to_string())
-        } else {
-            (path.to_string(), path.to_string())
-        }
+        let path_parts = path.split("/")
+            .map(str::to_string)
+            .collect::<Vec<String>>();
+        path_parts.clone()
+    }
+}
+
+fn assign_path_parts(path_parts: Vec<String>) -> (String, String) {
+    if path_parts.len() > 1 {
+        (path_parts[0].to_string(), path_parts[1].to_string())
+    } else if path_parts.len() > 0 {
+        (path_parts[0].to_string(), "".to_string())
+    } else {
+        ("".to_string(), "".to_string())
     }
 }
 
 async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
-    return if chunk_address != SAFE_PATH && !is_xor(chunk_address) {
-        dns.resolve(chunk_address.clone(), false).await
-    } else {
+    if chunk_address == XOR_PATH || is_xor(chunk_address) {
+        debug!("Chunk address is XOR address [{}]", chunk_address);
         Ok(chunk_address.clone())
+    } else {
+        dns.resolve(chunk_address.clone(), false).await
     }
 }
 
 fn is_xor_len(chunk_address: &String) -> bool {
-    return chunk_address.len() == 64;
+    chunk_address.len() == 64
 }
 
 fn is_xor(chunk_address: &String) -> bool {
-    return is_xor_len(chunk_address) && str_to_xor_name(chunk_address).is_ok();
+    is_xor_len(chunk_address) && str_to_xor_name(chunk_address).is_ok()
 }
 
 fn str_to_xor_name(str: &String) -> Result<XorName> {
@@ -488,34 +333,34 @@ fn str_to_xor_name(str: &String) -> Result<XorName> {
 
 fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     // todo: update when NRS (dynamic XOR URL lookup) is available
-    return if !is_resolved_file_name && is_xor(safe_url) {
+    if !is_resolved_file_name && is_xor(safe_url) {
         info!("URL is XOR URL (treat as immutable): [{}]", safe_url);
         31536000u32 // cache 'forever'
     } else {
         info!("URL is register URL (treat as mutable): [{}]", safe_url);
-        30 // only cache for 30s
+        300 // only cache for 5 mins
     }
 }
 
-//async fn get_config(files_api: FilesApi, config_addr: String, resolved_config_addr: String) -> Result<Config> {
-async fn get_config(autonomi_client: Client, config_addr: String, resolved_config_addr: String) -> Result<Config> {
-    if config_addr != SAFE_PATH && config_addr != "" {
-        //let mut files_download = FilesDownload::new(autonomy_client.clone());
+async fn get_config(archive: Archive, autonomi_client: Client, archive_addr: String) -> Result<Config> {
+    let archive_addr_xorname = str_to_xor_name(&archive_addr)
+        .unwrap_or_else(|_| XorName::default());
 
-        let config_xor_name = str_to_xor_name(&resolved_config_addr)
-            .unwrap_or_else(|_| XorName::default());
-        //let chunk_addr = ChunkAddress::new(config_xor_name);
-        //let data = files_download.download_file(chunk_addr, None).await?;
-        let chunk_addr = ChunkAddr::from_content(config_xor_name.as_ref());
-        let data = autonomi_client.chunk_get(chunk_addr).await?;
+    let path = &PathBuf::from("./app-conf.json");
+    let data_addr = resolve_data_addr_from_archive(archive, path).unwrap();
 
-        //let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
-        let json = String::from_utf8(data.value().to_vec()).unwrap_or(String::new());
-        let config: Config = serde_json::from_str(&json).expect("Failed to parse json config");
 
-        Ok(config)
-    } else {
-        Ok(Config::default())
+    info!("Downloading item [{}] with addr [{}] from archive [{}]", path.display(), format!("{:x}", data_addr), format!("{:x}", archive_addr_xorname));
+    match autonomi_client.data_get(data_addr).await {
+        Ok(data) => {
+            let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+            let config: Config = serde_json::from_str(&json).expect("Failed to parse json config");
+
+            Ok(config)
+        }
+        Err(e) => {
+            Ok(Config::default())
+        }
     }
 }
 
@@ -540,5 +385,19 @@ fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, Str
         Ok((true, entry))
     } else {
         Err(Report::msg(format!("relative_path is neither XOR nor in the data map [{}]", relative_path)))
+    }
+}
+
+fn resolve_data_addr_from_archive(archive: Archive, path_buf: &PathBuf) -> Result<DataAddr> {
+    archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.display(), data_addr));
+
+    if archive.map().contains_key(path_buf) {
+        let (data_addr, metadata) = archive
+            .map()
+            .get(path_buf)
+            .expect(format!("Failed to retrieve [{}] from archive", path_buf.clone().display()).as_str());
+        Ok(data_addr.clone())
+    } else {
+        Err(Report::msg(format!("Failed to find item [{}] in archive", path_buf.clone().display())))
     }
 }

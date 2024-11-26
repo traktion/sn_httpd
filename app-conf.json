@@ -1,0 +1,15 @@
+{
+  "imim": {
+    "name": "Traktion Blog",
+    "articles": [
+      "safe-network-the-journey-to-digital-freedom",
+      "the-clean-green-immutable-dream",
+      "blogging-with-imim-and-safe-network"
+    ]
+  },
+  "routeMap": {
+    "": "index.html",
+    "blog/*": "index.html",
+    "blog/*/article/*": "index.html"
+  }
+}

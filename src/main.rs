@@ -4,7 +4,7 @@ mod dns;
 mod config;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
-use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec};
+use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
 use log::{info, error, debug, warn};
@@ -20,6 +20,8 @@ use ::autonomi::client::address::str_to_addr;
 use ::autonomi::client::archive::{Archive, ArchiveAddr};
 use ::autonomi::client::data::{ChunkAddr, DataAddr};
 use ::autonomi::EvmNetwork::ArbitrumSepolia;
+use actix_http::header;
+use actix_http::header::IF_NONE_MATCH;
 use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
 use bytes::{Bytes};
@@ -171,14 +173,24 @@ async fn get_safe_data(
         let resolved_relative_path_route = archive_file_name.clone();
 
         // resolve file name to chunk address
-        let (path_str, data_addr) = if is_xor(&resolved_relative_path_route) {
-            let path_str = resolved_relative_path_route.clone();
+        let (path_string, data_addr) = if is_xor(&resolved_relative_path_route) {
+            let path_string = resolved_relative_path_route.clone();
             let data_addr = str_to_xor_name(&resolved_relative_path_route).unwrap();
             info!("Resolved path is XOR address [{}]", resolved_relative_path_route);
-            (path_str, data_addr)
+            (path_string, data_addr)
         } else {
-            let path_str = "./".to_string() + resolved_relative_path_route.as_str().clone();
-            let path_buf = &PathBuf::from(path_str.clone());
+            let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
+            if resolved_relative_path_route.is_empty() {
+                if request.path().to_string().chars().last() != Some('/') {
+                    info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
+                    return HttpResponse::MovedPermanently()
+                        .insert_header((header::LOCATION, request.path().to_string() + "/"))
+                        .finish();
+                }
+                info!("List files in archive [{}]", archive_addr);
+                return HttpResponse::Ok()
+                    .body(list_archive_files(archive.clone()));
+            }
             let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_buf) {
                 Ok(value) => value,
                 Err(err) => {
@@ -188,9 +200,20 @@ async fn get_safe_data(
                 }
             };
             info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
-            (path_str, data_addr)
+            (resolved_relative_path_route, data_addr)
         };
-        download_data_body(path_str, data_addr, true, autonomi_client).await
+
+        if request.headers().contains_key(IF_NONE_MATCH) {
+            let e_tag = request.headers().get(IF_NONE_MATCH).unwrap().to_str().unwrap();
+            let source_e_tag = e_tag.to_string().replace("\"", "");
+            let target_e_tag = format!("{:x}", data_addr);
+            if source_e_tag == target_e_tag {
+                info!("ETag matches for path [{}] at address [{}]. Client can use cached version", path_string, format!("{:x}", data_addr));
+                return HttpResponse::NotModified().into()
+            }
+        }
+
+        download_data_body(path_string, data_addr, true, autonomi_client).await
     } else {
         // autonomi XOR addr
         info!("Retrieving file from [{:x}]", xor_addr);
@@ -214,9 +237,17 @@ async fn download_data_body(
             chunk_count += 1;
             bytes_read = data.len();
             info!("Read [{}] bytes of item [{}] at addr [{}]", bytes_read, path_str, format!("{:x}", xor_name));
-            HttpResponse::Ok()
-                .insert_header(CacheControl(vec![CacheDirective::MaxAge(calc_cache_max_age(&format!("{:x}", xor_name), is_resolved_file_name))]))
-                .body(data)
+            if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
+                // cache immutable
+                HttpResponse::Ok()
+                    .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
+                    .body(data)
+            } else {
+                // etag
+                HttpResponse::Ok()
+                    .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
+                    .body(data)
+            }
         }
         Err(e) => {
             HttpResponse::NotFound().body(format!("Failed to download [{:?}]", e))
@@ -389,9 +420,20 @@ fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, Str
 }
 
 fn resolve_data_addr_from_archive(archive: Archive, path_buf: &PathBuf) -> Result<DataAddr> {
-    archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.display(), data_addr));
+    archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.to_path_buf().file_name().unwrap().to_str().unwrap(), data_addr));
 
-    if archive.map().contains_key(path_buf) {
+    // todo: Replace with contains() once keys are a more useful shape
+    let path_buf_string = path_buf.clone().to_str().unwrap().to_string();
+    for key in archive.map().keys() {
+        let filename = key.to_path_buf().file_name().unwrap().to_str().unwrap().to_string();
+        if filename == path_buf_string {
+            let (data_addr, _) = archive.map().get(key).unwrap();
+            return Ok(data_addr.clone())
+        }
+    }
+    Err(Report::msg(format!("Failed to find item [{}] in archive", path_buf.clone().display())))
+
+    /*if archive.map().contains_key(path_buf) {
         let (data_addr, metadata) = archive
             .map()
             .get(path_buf)
@@ -399,5 +441,17 @@ fn resolve_data_addr_from_archive(archive: Archive, path_buf: &PathBuf) -> Resul
         Ok(data_addr.clone())
     } else {
         Err(Report::msg(format!("Failed to find item [{}] in archive", path_buf.clone().display())))
+    }*/
+}
+
+fn list_archive_files(archive: Archive) -> String {
+    let mut output = "<html><body><ul>".to_string();
+
+    // todo: Replace with contains() once keys are a more useful shape
+    for key in archive.map().keys() {
+        let filename = key.to_path_buf().file_name().unwrap().to_str().unwrap().to_string();
+        output.push_str(&format!("<li><a href=\"./{}\">{}</a></li>\n", key.display(), filename));
     }
+    output.push_str("</ul></body></html>");
+    output
 }

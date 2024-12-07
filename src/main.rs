@@ -2,6 +2,8 @@ mod proxy;
 mod autonomi;
 mod dns;
 mod config;
+mod caching_archive;
+mod caching_data;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
 use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec, ETag, EntityTag};
@@ -35,6 +37,7 @@ use color_eyre::eyre::Context;
 use sn_evm::EvmWallet;
 use sn_protocol::storage::{Chunk, ChunkAddress};
 use crate::autonomi::Autonomi;
+use crate::caching_archive::CachingClient;
 use crate::proxy::Proxy;
 use crate::dns::Dns;
 use crate::config::AppConfig;
@@ -126,9 +129,10 @@ async fn get_safe_data(
             .body(format!("Failed to resolve DNS name [{:?}]", archive_name)),
     };
 
+    let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (archive, is_archive, xor_addr) = if archive_addr.to_lowercase() != XOR_PATH {
         let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
-        match autonomi_client.archive_get(archive_addr_xorname).await {
+        match caching_autonomi_client.archive_get(archive_addr_xorname).await {
             Ok(value) => {
                 info!("Found archive at [{:x}]", archive_addr_xorname);
                 (value, true, archive_addr_xorname)

@@ -33,6 +33,7 @@ use tempfile::{tempdir};
 use futures::{StreamExt};
 use globset::{Glob};
 use awc::Client as AwcClient;
+use clap::builder::Str;
 use color_eyre::eyre::Context;
 use sn_evm::EvmWallet;
 use sn_protocol::storage::{Chunk, ChunkAddress};
@@ -116,7 +117,7 @@ async fn get_safe_data(
     }*/
 
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
-    let (archive_name, archive_file_name) = assign_path_parts(path_parts);
+    let (archive_name, archive_file_name) = assign_path_parts(path_parts.clone());
     let autonomi_client = autonomi_client_data.get_ref().clone();
     let dns = dns_data.get_ref();
 
@@ -195,7 +196,7 @@ async fn get_safe_data(
                 return HttpResponse::Ok()
                     .body(list_archive_files(archive.clone()));
             }
-            let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_buf) {
+            let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_parts) {
                 Ok(value) => value,
                 Err(err) => {
                     warn!("{:?}", err);
@@ -377,12 +378,12 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     }
 }
 
-async fn get_config(archive: Archive, autonomi_client: Client, archive_addr: String) -> Result<Config> {
+/*async fn get_config(archive: Archive, autonomi_client: Client, archive_addr: String) -> Result<Config> {
     let archive_addr_xorname = str_to_xor_name(&archive_addr)
         .unwrap_or_else(|_| XorName::default());
 
     let path = &PathBuf::from("./app-conf.json");
-    let data_addr = resolve_data_addr_from_archive(archive, path).unwrap();
+    let data_addr = resolve_data_addr_from_archive(archive, path.ve).unwrap();
 
 
     info!("Downloading item [{}] with addr [{}] from archive [{}]", path.display(), format!("{:x}", data_addr), format!("{:x}", archive_addr_xorname));
@@ -397,7 +398,7 @@ async fn get_config(archive: Archive, autonomi_client: Client, archive_addr: Str
             Ok(Config::default())
         }
     }
-}
+}*/
 
 fn resolve_route(relative_path: String, config: Config) -> Result<String> {
     for (key, value) in config.route_map {
@@ -423,19 +424,18 @@ fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, Str
     }
 }
 
-fn resolve_data_addr_from_archive(archive: Archive, path_buf: &PathBuf) -> Result<DataAddr> {
-    archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.to_path_buf().file_name().unwrap().to_str().unwrap(), data_addr));
+fn resolve_data_addr_from_archive(archive: Archive, path_parts: Vec<String>) -> Result<DataAddr> {
+    archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.display(), data_addr));
 
     // todo: Replace with contains() once keys are a more useful shape
-    let path_buf_string = path_buf.clone().to_str().unwrap().to_string();
+    let path_parts_string = path_parts[1..].join("/");
     for key in archive.map().keys() {
-        let filename = key.to_path_buf().file_name().unwrap().to_str().unwrap().to_string();
-        if filename == path_buf_string {
+        if key.to_str().unwrap().to_string().trim_start_matches("./") == path_parts_string {
             let (data_addr, _) = archive.map().get(key).unwrap();
             return Ok(data_addr.clone())
         }
     }
-    Err(Report::msg(format!("Failed to find item [{}] in archive", path_buf.clone().display())))
+    Err(Report::msg(format!("Failed to find item [{}] in archive", path_parts_string)))
 
     /*if archive.map().contains_key(path_buf) {
         let (data_addr, metadata) = archive
@@ -453,8 +453,8 @@ fn list_archive_files(archive: Archive) -> String {
 
     // todo: Replace with contains() once keys are a more useful shape
     for key in archive.map().keys() {
-        let filename = key.to_path_buf().file_name().unwrap().to_str().unwrap().to_string();
-        output.push_str(&format!("<li><a href=\"./{}\">{}</a></li>\n", key.display(), filename));
+        let filepath = key.to_str().unwrap().to_string().trim_start_matches("./").to_string();
+        output.push_str(&format!("<li><a href=\"{}\">{}</a></li>\n", filepath, filepath));
     }
     output.push_str("</ul></body></html>");
     output

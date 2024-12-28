@@ -37,7 +37,7 @@ impl AppConfig {
         let network_peer_url: Url = network_contact
             .parse::<Url>()
             .map_err(|err| anyhow!("Invalid Safe network peer URL: {}", err)).unwrap();
-        info!("Safe network to be contacted: [{}]", network_peer_url);
+        info!("Safe network to be contacted (DEPRECATED!): [{}]", network_peer_url);
 
         // Read the network contact socket address from second arg passed
         let dns_register = args_received

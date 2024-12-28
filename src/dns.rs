@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use autonomi::Client;
 use autonomi::client::registers::RegisterAddress;
+use bls::PublicKey;
 use color_eyre::eyre::eyre;
 use color_eyre::Report;
 use log::{debug, info};
-use sn_transfers::bls;
-use sn_transfers::bls::PublicKey;
 use xor_name::XorName;
 
 #[derive(Clone)]

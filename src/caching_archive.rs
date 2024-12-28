@@ -1,10 +1,8 @@
-use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
 use autonomi::Client;
-use autonomi::client::archive::{Archive, ArchiveAddr};
 use autonomi::client::data::{GetError};
+use autonomi::client::files::archive_public::{ArchiveAddr, PublicArchive};
 use bytes::Bytes;
 
 #[derive(Clone)]
@@ -21,14 +19,14 @@ impl CachingClient {
     }
 
     /// Fetch an archive from the network
-    pub async fn archive_get(&self, addr: ArchiveAddr) -> Result<Archive, GetError> {
+    pub async fn archive_get_public(&self, addr: ArchiveAddr) -> Result<PublicArchive, GetError> {
         let cached_data = self.read_file(addr).await;
         if !cached_data.is_empty() {
-            Ok(Archive::from_bytes(cached_data)?)
+            Ok(PublicArchive::from_bytes(cached_data)?)
         } else {
-            let data = self.client.data_get(addr).await?;
+            let data = self.client.data_get_public(addr).await?;
             self.write_file(addr, data.to_vec()).await;
-            Ok(Archive::from_bytes(data)?)
+            Ok(PublicArchive::from_bytes(data)?)
         }
     }
 

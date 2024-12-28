@@ -1,9 +1,11 @@
 use std::path::PathBuf;
+use ant_bootstrap::PeersArgs;
 use autonomi::Client;
+use bls::SecretKey;
+use color_eyre::eyre::Context;
+use color_eyre::Help;
 use log::info;
-use sn_peers_acquisition::get_peers_from_url;
-use sn_transfers::bls::SecretKey;
-use sn_transfers::bls_secret_from_hex;
+use multiaddr::Multiaddr;
 use crate::CLIENT_KEY;
 use crate::config::AppConfig;
 use url::Url;
@@ -23,22 +25,15 @@ impl Autonomi {
     //pub async fn init(&self) -> (Client, FilesApi) {
     pub async fn init(&self) -> Client {
         // initialise safe network connection and files api
-        let client = self.safe_connect(&self.app_config.network_peer_url).await.expect("Failed to connect to Safe Network");
-        client
+        let peers =  Self::get_peers(PeersArgs::default()).await.unwrap();
+        Client::init_with_peers(peers).await.expect("Failed to connect to Autonomi Network")
     }
 
-    async fn safe_connect(&self, peer_url: &Url) -> color_eyre::Result<Client> {
-        // note: this was pulled directly from sn_cli
-
-        let bootstrap_peers = get_peers_from_url(peer_url.clone()).await?;
-
-        println!(
-            "Connecting to the network with {} peers",
-            bootstrap_peers.len(),
-        );
-
-        let result = Client::connect(&bootstrap_peers).await?;
-        Ok(result)
+    pub async fn get_peers(peers: PeersArgs) -> color_eyre::Result<Vec<Multiaddr>> {
+        peers.get_addrs(None, Some(100)).await
+            .wrap_err("Please provide valid Network peers to connect to")
+            .with_suggestion(|| format!("make sure you've provided network peers using the --peers option or the ANT_PEERS_ENV env var"))
+            .with_suggestion(|| "a peer address looks like this: /ip4/42.42.42.42/udp/4242/quic-v1/p2p/B64nodePeerIDvdjb3FAJF4ks3moreBase64CharsHere")
     }
 
     fn get_client_secret_key(&self, root_dir: &PathBuf) -> color_eyre::Result<SecretKey> {
@@ -48,8 +43,9 @@ impl Autonomi {
         let key_path = root_dir.join(CLIENT_KEY);
         let secret_key = if key_path.is_file() {
             info!("Client key found. Loading from file...");
-            let secret_hex_bytes = std::fs::read(key_path)?;
-            bls_secret_from_hex(secret_hex_bytes)?
+            let secret_hex_string = std::fs::read_to_string(key_path)?;
+            SecretKey::from_hex(secret_hex_string.as_str())?
+            //bls_secret_from_hex(secret_hex_bytes)?
         } else {
             info!("No key found. Generating a new client key...");
             let secret_key = SecretKey::random();

@@ -19,13 +19,14 @@ use std::io::{empty, Write};
 use std::path::PathBuf;
 use ::autonomi::Client;
 use ::autonomi::client::address::str_to_addr;
-use ::autonomi::client::archive::{Archive, ArchiveAddr};
 use ::autonomi::client::data::{ChunkAddr, DataAddr};
-use ::autonomi::EvmNetwork::ArbitrumSepolia;
+use ::autonomi::client::files::archive_public::PublicArchive;
+use ::autonomi::Network::ArbitrumSepolia;
 use actix_http::header;
 use actix_http::header::IF_NONE_MATCH;
 use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
+use ant_evm::EvmWallet;
 use bytes::{Bytes};
 use async_stream::stream;
 use color_eyre::{Report, Result};
@@ -35,8 +36,6 @@ use globset::{Glob};
 use awc::Client as AwcClient;
 use clap::builder::Str;
 use color_eyre::eyre::Context;
-use sn_evm::EvmWallet;
-use sn_protocol::storage::{Chunk, ChunkAddress};
 use crate::autonomi::Autonomi;
 use crate::caching_archive::CachingClient;
 use crate::proxy::Proxy;
@@ -82,7 +81,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(logger)
             .service(Files::new("/static", app_config.static_dir.clone()))
-            .route("/xor", web::post().to(post_safe_data))
+            //.route("/xor", web::post().to(post_safe_data))
             .route("/{path:.*}", web::get().to(get_safe_data))
             //.service(get_account)
             .app_data(Data::new(app_config.clone()))
@@ -133,20 +132,20 @@ async fn get_safe_data(
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (archive, is_archive, xor_addr) = if archive_addr.to_lowercase() != XOR_PATH {
         let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
-        match caching_autonomi_client.archive_get(archive_addr_xorname).await {
+        match caching_autonomi_client.archive_get_public(archive_addr_xorname).await {
             Ok(value) => {
                 info!("Found archive at [{:x}]", archive_addr_xorname);
                 (value, true, archive_addr_xorname)
             },
             Err(_) => {
                 info!("No archive found at [{:x}]. Treating as XOR address", archive_addr_xorname);
-                (Archive::new(), false, archive_addr_xorname)
+                (PublicArchive::new(), false, archive_addr_xorname)
             }
         }
     } else if is_xor(&archive_file_name) {
         let archive_file_name_xorname = str_to_xor_name(&archive_file_name).unwrap();
         info!("Found XOR address [{:x}]", archive_file_name_xorname);
-        (Archive::new(), false, archive_file_name_xorname)
+        (PublicArchive::new(), false, archive_file_name_xorname)
     } else {
         warn!("Failed to download [{:?}]", archive_file_name);
         return HttpResponse::NotFound().body(format!("Failed to download [{:?}]", archive_file_name));
@@ -237,7 +236,7 @@ async fn download_data_body(
     let mut bytes_read = 0;
 
     info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
-    match autonomi_client.data_get(xor_name).await {
+    match autonomi_client.data_get_public(xor_name).await {
         Ok(data) => {
             chunk_count += 1;
             bytes_read = data.len();
@@ -279,7 +278,7 @@ fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
     }
 }
 
-async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
+/*async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
     info!("Post file");
     let autonomi_client = autonomi_client_data.get_ref().clone();
     let evm_wallet = evm_wallet_data.get_ref().clone();
@@ -310,7 +309,7 @@ async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Cl
     info!("Successfully uploaded data at [{}]", data_addr);
     Ok(HttpResponse::Ok()
         .body(data_addr.to_string()))
-}
+}*/
 
 fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
     // assert: subdomain.autonomi as acceptable format
@@ -424,7 +423,7 @@ fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, Str
     }
 }
 
-fn resolve_data_addr_from_archive(archive: Archive, path_parts: Vec<String>) -> Result<DataAddr> {
+fn resolve_data_addr_from_archive(archive: PublicArchive, path_parts: Vec<String>) -> Result<DataAddr> {
     archive.iter().for_each(|(path_buf, data_addr, _)| debug!("archive entry: [{}] at [{:x}]", path_buf.display(), data_addr));
 
     // todo: Replace with contains() once keys are a more useful shape
@@ -448,7 +447,7 @@ fn resolve_data_addr_from_archive(archive: Archive, path_parts: Vec<String>) -> 
     }*/
 }
 
-fn list_archive_files(archive: Archive) -> String {
+fn list_archive_files(archive: PublicArchive) -> String {
     let mut output = "<html><body><ul>".to_string();
 
     // todo: Replace with contains() once keys are a more useful shape

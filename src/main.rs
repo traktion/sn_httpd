@@ -21,7 +21,7 @@ use ::autonomi::client::address::str_to_addr;
 use ::autonomi::client::data::{ChunkAddr, DataAddr};
 use ::autonomi::client::files::archive_public::PublicArchive;
 use ::autonomi::Network::ArbitrumSepolia;
-use actix_http::header;
+use actix_http::{header, HttpMessage};
 use actix_http::header::IF_NONE_MATCH;
 use actix_web::dev::{ConnectionInfo, PeerAddr};
 use actix_web::web::Data;
@@ -183,8 +183,14 @@ async fn get_safe_data(
                 (resolved_relative_path_route, data_addr)
             } else {
                 info!("List files in archive [{}]", archive_addr);
+                if let Some(accept) = request.headers().get("Accept") {
+                    if accept.to_str().unwrap().to_string().contains( "json") {
+                        return HttpResponse::Ok()
+                            .body(list_archive_files_json(archive.clone()))
+                    }
+                }
                 return HttpResponse::Ok()
-                    .body(list_archive_files(archive.clone()));
+                    .body(list_archive_files(archive.clone()))
             }
         };
 
@@ -453,6 +459,25 @@ fn list_archive_files(archive: PublicArchive) -> String {
         output.push_str(&format!("<li><a href=\"{}\">{}</a></li>\n", filepath, filepath));
     }
     output.push_str("</ul></body></html>");
+    output
+}
+
+fn list_archive_files_json(archive: PublicArchive) -> String {
+    let mut output = "[\n".to_string();
+
+    let i = 1;
+    let count = archive.map().keys().len();
+    for key in archive.map().keys() {
+        let filepath = key.to_str().unwrap().to_string().trim_start_matches("./").to_string();
+        output.push_str("{");
+        output.push_str(&format!("\"name\": \"{}\", \"type\": \"file\"", filepath));
+        output.push_str("}");
+        if i < count {
+            output.push_str(",");
+        }
+        output.push_str("\n");
+    }
+    output.push_str("]");
     output
 }
 

@@ -33,13 +33,13 @@ jobs:
     - name: Build x86_64-pc-windows-gnu
       run: cargo build --release --target x86_64-pc-windows-gnu
     - name: Upload a Build Artifacts
-      uses: actions/upload-artifact@v2.2.3
+      uses: actions/upload-artifact@v4
       with:
         name: target
         path: |
           target
     - name: Cache
-      uses: actions/cache@v2.1.5
+      uses: actions/cache@v4
       with:
         path: |
           target

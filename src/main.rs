@@ -3,10 +3,9 @@ mod autonomi;
 mod dns;
 mod config;
 mod caching_archive;
-mod caching_data;
 
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, Error, HttpRequest};
-use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec, ETag, EntityTag};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, HttpRequest};
+use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec, ContentType, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
 use log::{info, error, debug, warn};
@@ -50,12 +49,11 @@ const PROXY_ENABLED: bool = false;
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Config {
-    file_map: HashMap<String, String>,
     route_map: HashMap<String, String>
 }
 impl Default for Config {
     fn default () -> Config {
-        Config{file_map: HashMap::new(), route_map: HashMap::new()}
+        Config{route_map: HashMap::new()}
     }
 }
 
@@ -103,18 +101,6 @@ async fn get_safe_data(
     conn: ConnectionInfo,
     dns_data: Data<Dns>,
 ) -> impl Responder {
-    // todo: fix build issue with aarch64 when the proxy is included
-    /*if PROXY_ENABLED {
-        let proxy = Proxy::new(".autonomi".to_string(), awc_client.get_ref().clone());
-        if proxy.is_remote_url(&conn.host()) {
-            return match proxy.forward(request, payload, peer_addr).await {
-                Ok(value) => value,
-                Err(err) => return HttpResponse::InternalServerError()
-                    .body(format!("Failed to forward proxy request [{:?}]", err)),
-            }
-        }
-    }*/
-
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
     let (archive_name, archive_file_name) = assign_path_parts(path_parts.clone());
     let autonomi_client = autonomi_client_data.get_ref().clone();
@@ -154,8 +140,8 @@ async fn get_safe_data(
     if (is_archive) {
         info!("Retrieving file from archive [{:x}]", xor_addr);
 
-        /*// load config from subdomain (of .autonomi) or path root
-        let config = match get_config(archive.clone(), autonomi_client.clone(), archive_addr).await {
+        // load config from subdomain (of .autonomi) or path root
+        let config = match get_config(archive.clone(), caching_autonomi_client.clone(), archive_addr.clone()).await {
             Ok(value) => value,
             Err(err) => {
                 warn!("Failed to load config from map [{:?}]", err);
@@ -165,16 +151,7 @@ async fn get_safe_data(
         };
 
         // resolve route
-        let resolved_relative_path_route = match resolve_route(archive_file_name, config.clone()) {
-            Ok(value) => value,
-            Err(err) => {
-                warn!("Failed to resolve route [{:?}]", err);
-                return HttpResponse::InternalServerError()
-                    .body(format!("Failed to resolve route [{:?}]", err))
-            },
-        };*/
-
-        let resolved_relative_path_route = archive_file_name.clone();
+        let (resolved_relative_path_route, has_route_map) = resolve_route(path_parts.clone()[1..].join("/").to_string(), config.clone(), archive_file_name.clone());
 
         // resolve file name to chunk address
         let (path_string, data_addr) = if is_xor(&resolved_relative_path_route) {
@@ -184,27 +161,31 @@ async fn get_safe_data(
             (path_string, data_addr)
         } else {
             let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
-            if resolved_relative_path_route.is_empty() {
-                if request.path().to_string().chars().last() != Some('/') {
-                    info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
-                    return HttpResponse::MovedPermanently()
-                        .insert_header((header::LOCATION, request.path().to_string() + "/"))
-                        .finish();
-                }
+            if resolved_relative_path_route.is_empty() && request.path().to_string().chars().last() != Some('/') {
+                info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
+                return HttpResponse::MovedPermanently()
+                    .insert_header((header::LOCATION, request.path().to_string() + "/"))
+                    .finish();
+            }
+
+            if has_route_map {
+                get_index(resolved_relative_path_route, archive.clone(), &request)
+            } else if !resolved_relative_path_route.is_empty() {
+                let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_parts.clone()) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        warn!("{:?}", err);
+                        return HttpResponse::NotFound()
+                            .body(format!("{:?}", err))
+                    }
+                };
+                info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
+                (resolved_relative_path_route, data_addr)
+            } else {
                 info!("List files in archive [{}]", archive_addr);
                 return HttpResponse::Ok()
                     .body(list_archive_files(archive.clone()));
             }
-            let data_addr = match resolve_data_addr_from_archive(archive.clone(), path_parts) {
-                Ok(value) => value,
-                Err(err) => {
-                    warn!("{:?}", err);
-                    return HttpResponse::NotFound()
-                        .body(format!("{:?}", err))
-                }
-            };
-            info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
-            (resolved_relative_path_route, data_addr)
         };
 
         if request.headers().contains_key(IF_NONE_MATCH) {
@@ -217,7 +198,7 @@ async fn get_safe_data(
             }
         }
 
-        download_data_body(path_string, data_addr, true, autonomi_client).await
+        download_data_body(path_parts[1..].join("/").to_string(), data_addr, true, autonomi_client).await
     } else {
         // autonomi XOR addr
         info!("Retrieving file from [{:x}]", xor_addr);
@@ -243,14 +224,28 @@ async fn download_data_body(
             info!("Read [{}] bytes of item [{}] at addr [{}]", bytes_read, path_str, format!("{:x}", xor_name));
             if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
                 // cache immutable
-                HttpResponse::Ok()
-                    .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
-                    .body(data)
+                if path_str.ends_with(".js") {
+                    HttpResponse::Ok()
+                        .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
+                        .insert_header(get_content_type_from_filename(path_str))
+                        .body(data)
+                } else {
+                    HttpResponse::Ok()
+                        .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
+                        .body(data)
+                }
             } else {
                 // etag
-                HttpResponse::Ok()
-                    .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
-                    .body(data)
+                if path_str.ends_with(".js") {
+                    HttpResponse::Ok()
+                        .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
+                        .insert_header(get_content_type_from_filename(path_str))
+                        .body(data)
+                } else {
+                    HttpResponse::Ok()
+                        .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
+                        .body(data)
+                }
             }
         }
         Err(e) => {
@@ -377,19 +372,25 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
     }
 }
 
-/*async fn get_config(archive: Archive, autonomi_client: Client, archive_addr: String) -> Result<Config> {
+async fn get_config(archive: PublicArchive, autonomi_client: CachingClient, archive_addr: String) -> Result<Config> {
     let archive_addr_xorname = str_to_xor_name(&archive_addr)
         .unwrap_or_else(|_| XorName::default());
 
-    let path = &PathBuf::from("./app-conf.json");
-    let data_addr = resolve_data_addr_from_archive(archive, path.ve).unwrap();
+    let path_str = "app-conf.json";
+    let mut path_parts = Vec::<String>::new();
+    path_parts.push("ignore".to_string());
+    path_parts.push(path_str.to_string());
+    let data_addr = match resolve_data_addr_from_archive(archive, path_parts) {
+        Ok(data) => data,
+        Err(e) => DataAddr::default()
+    };
 
-
-    info!("Downloading item [{}] with addr [{}] from archive [{}]", path.display(), format!("{:x}", data_addr), format!("{:x}", archive_addr_xorname));
-    match autonomi_client.data_get(data_addr).await {
+    info!("Downloading app-config [{}] with addr [{}] from archive [{}]", path_str, format!("{:x}", data_addr), format!("{:x}", archive_addr_xorname));
+    match autonomi_client.data_get_public(data_addr).await {
         Ok(data) => {
             let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
-            let config: Config = serde_json::from_str(&json).expect("Failed to parse json config");
+            debug!("json [{}]", json);
+            let config: Config = serde_json::from_str(&json.as_str()).unwrap_or(Config::default());
 
             Ok(config)
         }
@@ -397,27 +398,23 @@ fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
             Ok(Config::default())
         }
     }
-}*/
+}
 
-fn resolve_route(relative_path: String, config: Config) -> Result<String> {
+fn resolve_route(relative_path: String, config: Config, archive_file_name: String) -> (String, bool) {
     for (key, value) in config.route_map {
-        let glob = Glob::new(key.as_str())?.compile_matcher();
+        let glob = Glob::new(key.as_str()).unwrap().compile_matcher();
         debug!("route mapper comparing path [{}] with glob [{}]", relative_path, key);
         if glob.is_match(&relative_path) {
             info!("route mapper resolved path [{}] to [{}] with glob [{}]", relative_path, key, value);
-            return Ok(value)
+            return (value, true);
         }
     };
-    Ok(relative_path)
+    (archive_file_name, false)
 }
 
 fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, String)> {
-    return if is_xor(&relative_path) {
+    if is_xor(&relative_path) {
         Ok((false, relative_path))
-    } else if config.file_map.contains_key(&relative_path) {
-        let entry = config.file_map.get(&relative_path).expect("Failed to retrieve path from map").to_string();
-        info!("file mapper resolved path [{}] to chunk_address [{}]", relative_path, entry);
-        Ok((true, entry))
     } else {
         Err(Report::msg(format!("relative_path is neither XOR nor in the data map [{}]", relative_path)))
     }
@@ -429,7 +426,7 @@ fn resolve_data_addr_from_archive(archive: PublicArchive, path_parts: Vec<String
     // todo: Replace with contains() once keys are a more useful shape
     let path_parts_string = path_parts[1..].join("/");
     for key in archive.map().keys() {
-        if key.to_str().unwrap().to_string().trim_start_matches("./") == path_parts_string {
+        if key.to_str().unwrap().to_string().trim_start_matches("./").ends_with(path_parts_string.as_str()) {
             let (data_addr, _) = archive.map().get(key).unwrap();
             return Ok(data_addr.clone())
         }
@@ -457,4 +454,37 @@ fn list_archive_files(archive: PublicArchive) -> String {
     }
     output.push_str("</ul></body></html>");
     output
+}
+
+fn has_index(archive: PublicArchive) -> bool {
+    for key in archive.map().keys() {
+        if key.ends_with("index.html") {
+            return true;
+        }
+    }
+    false
+}
+
+fn get_index(resolved_filename_string: String, archive: PublicArchive, request: &HttpRequest) -> (String, XorName) {
+    // hack to return index.html when present in directory root
+    for key in archive.map().keys() {
+        if key.ends_with(resolved_filename_string.to_string()) {
+            let path_string = request.path().to_string() + key.to_str().unwrap();
+            let data_addr = archive.map().get(key).unwrap().0;
+            return (path_string, data_addr)
+        }
+    }
+    (String::new(), XorName::default())
+}
+
+fn get_content_type_from_filename(filename: String) -> ContentType {
+    if filename.ends_with(".js") {
+        ContentType(mime::APPLICATION_JAVASCRIPT)
+    } else if filename.ends_with(".html") {
+        ContentType(mime::TEXT_HTML)
+    } else if filename.ends_with(".css") {
+        ContentType(mime::TEXT_CSS)
+    } else {
+        ContentType(mime::TEXT_PLAIN)
+    }
 }

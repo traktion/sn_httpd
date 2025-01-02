@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use autonomi::Client;
-use autonomi::client::data::{GetError};
+use autonomi::client::data::{DataAddr, GetError};
 use autonomi::client::files::archive_public::{ArchiveAddr, PublicArchive};
 use bytes::Bytes;
 
@@ -30,6 +30,17 @@ impl CachingClient {
         }
     }
 
+    pub async fn data_get_public(&self, addr: DataAddr) -> Result<Bytes, GetError> {
+        let cached_data = self.read_file(addr).await;
+        if !cached_data.is_empty() {
+            Ok(cached_data)
+        } else {
+            let data = self.client.data_get_public(addr).await?;
+            self.write_file(addr, data.to_vec()).await;
+            Ok(data)
+        }
+    }
+
     pub async fn write_file(&self, addr: ArchiveAddr, data: Vec<u8>) {
         let path_string = "cache/".to_owned() + format!("{:x}", addr).as_str();
         let mut file = File::create(path_string).unwrap();
@@ -45,7 +56,6 @@ impl CachingClient {
                 Bytes::from(contents.clone())
             },
             Err(_) => {
-                let mut contents = String::new();
                 Bytes::from("")
             }
         }

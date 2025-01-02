@@ -1,6 +1,6 @@
 [package]
 name = "sn_httpd"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -8,8 +8,6 @@ edition = "2018"
 [dependencies]
 actix-files = "0.6.5"
 actix-http = "3"
-actix-rt = "2.7"
-actix-service = "2"
 actix-web = "4"
 awc = "3"
 anyhow = "1.0.80"
@@ -18,13 +16,10 @@ env_logger = "0.11.6"
 serde = "1.0.197"
 serde_json = "1.0.114"
 dirs-next = "2.0.0"
-tokio = { version = "1.36.0", features = ["rt", "macros"] }
-autonomi = "0.3.0"
-ant-evm = "0.1.5"
+autonomi = "0.3.1"
+ant-evm = "0.1.6"
 ant-bootstrap = "0.1.1"
 xor_name = "5.0.0"
-chrono = "0.4.38"
-regex = "1.10.6"
 hex = "0.4.3"
 color-eyre = "~0.6"
 clap = { version = "4.5.2", features = ["derive"] }
@@ -34,10 +29,10 @@ tempfile = "3.10.1"
 bytes = "1.5.0"
 futures = "0.3.30"
 globset = "0.4.14"
-tokio-stream = "0.1.15"
 url = "2.5.2"
 #self_encryption = "0.29.1"
 bls = { package = "blsttc", version = "8.0.1" }
+mime = "0.3.17"
 
 #[patch.crates-io]
 #sn_client = { path = "/home/paul/dev/safe_network/sn_client" }

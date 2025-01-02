@@ -8,7 +8,6 @@ use log::info;
 use multiaddr::Multiaddr;
 use crate::CLIENT_KEY;
 use crate::config::AppConfig;
-use url::Url;
 
 #[derive(Clone)]
 pub struct Autonomi {

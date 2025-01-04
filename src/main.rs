@@ -186,10 +186,12 @@ async fn get_safe_data(
                 if let Some(accept) = request.headers().get("Accept") {
                     if accept.to_str().unwrap().to_string().contains( "json") {
                         return HttpResponse::Ok()
+                            .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
                             .body(list_archive_files_json(archive.clone()))
                     }
                 }
                 return HttpResponse::Ok()
+                    .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
                     .body(list_archive_files(archive.clone()))
             }
         };
@@ -465,7 +467,7 @@ fn list_archive_files(archive: PublicArchive) -> String {
 fn list_archive_files_json(archive: PublicArchive) -> String {
     let mut output = "[\n".to_string();
 
-    let i = 1;
+    let mut i = 1;
     let count = archive.map().keys().len();
     for key in archive.map().keys() {
         let filepath = key.to_str().unwrap().to_string().trim_start_matches("./").to_string();
@@ -476,6 +478,7 @@ fn list_archive_files_json(archive: PublicArchive) -> String {
             output.push_str(",");
         }
         output.push_str("\n");
+        i+=1;
     }
     output.push_str("]");
     output

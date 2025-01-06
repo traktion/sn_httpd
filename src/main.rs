@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::{fs};
 use std::collections::HashMap;
-use std::fs::{File,create_dir_all};
+use std::fs::{File, create_dir_all, Metadata};
 use std::io::{empty, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 use ::autonomi::Client;
 use ::autonomi::client::address::str_to_addr;
 use ::autonomi::client::data::{ChunkAddr, DataAddr};
@@ -33,6 +34,7 @@ use tempfile::{tempdir};
 use futures::{StreamExt};
 use globset::{Glob};
 use awc::Client as AwcClient;
+use chrono::{DateTime, Utc};
 use clap::builder::Str;
 use color_eyre::eyre::Context;
 use crate::autonomi::Autonomi;
@@ -470,9 +472,12 @@ fn list_archive_files_json(archive: PublicArchive) -> String {
     let mut i = 1;
     let count = archive.map().keys().len();
     for key in archive.map().keys() {
+        let (_, metadata) = archive.map().get(key).unwrap();
+        let mtime_datetime = DateTime::from_timestamp_millis(metadata.modified as i64 * 1000).unwrap();
+        let mtime_iso = mtime_datetime.format("%+");
         let filepath = key.to_str().unwrap().to_string().trim_start_matches("./").to_string();
         output.push_str("{");
-        output.push_str(&format!("\"name\": \"{}\", \"type\": \"file\"", filepath));
+        output.push_str(&format!("\"name\": \"{}\", \"type\": \"file\", \"mtime\": \"{}\", \"size\": \"{}\"", filepath, mtime_iso, metadata.size));
         output.push_str("}");
         if i < count {
             output.push_str(",");

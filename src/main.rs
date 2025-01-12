@@ -390,23 +390,23 @@ async fn get_config(archive: PublicArchive, autonomi_client: CachingClient, arch
     let mut path_parts = Vec::<String>::new();
     path_parts.push("ignore".to_string());
     path_parts.push(path_str.to_string());
-    let data_addr = match resolve_data_addr_from_archive(archive, path_parts) {
-        Ok(data) => data,
-        Err(e) => DataAddr::default()
-    };
-
-    info!("Downloading app-config [{}] with addr [{}] from archive [{}]", path_str, format!("{:x}", data_addr), format!("{:x}", archive_addr_xorname));
-    match autonomi_client.data_get_public(data_addr).await {
+    match resolve_data_addr_from_archive(archive, path_parts) {
         Ok(data) => {
-            let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
-            debug!("json [{}]", json);
-            let config: Config = serde_json::from_str(&json.as_str()).unwrap_or(Config::default());
+            info!("Downloading app-config [{}] with addr [{}] from archive [{}]", path_str, format!("{:x}", data), format!("{:x}", archive_addr_xorname));
+            match autonomi_client.data_get_public(data).await {
+                Ok(data) => {
+                    let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+                    debug!("json [{}]", json);
+                    let config: Config = serde_json::from_str(&json.as_str()).unwrap_or(Config::default());
 
-            Ok(config)
-        }
-        Err(e) => {
-            Ok(Config::default())
-        }
+                    Ok(config)
+                }
+                Err(e) => {
+                    Ok(Config::default())
+                }
+            }
+        },
+        Err(e) => Ok(Config::default())
     }
 }
 

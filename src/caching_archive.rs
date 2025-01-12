@@ -4,6 +4,7 @@ use autonomi::Client;
 use autonomi::client::data::{DataAddr, GetError};
 use autonomi::client::files::archive_public::{ArchiveAddr, PublicArchive};
 use bytes::Bytes;
+use log::{info, error, debug, warn};
 
 #[derive(Clone)]
 pub struct CachingClient {
@@ -33,8 +34,10 @@ impl CachingClient {
     pub async fn data_get_public(&self, addr: DataAddr) -> Result<Bytes, GetError> {
         let cached_data = self.read_file(addr).await;
         if !cached_data.is_empty() {
+            debug!("getting cached data for {:?} from local storage", addr);
             Ok(cached_data)
         } else {
+            debug!("getting non-cached data for {:?} from network", addr);
             let data = self.client.data_get_public(addr).await?;
             self.write_file(addr, data.to_vec()).await;
             Ok(data)

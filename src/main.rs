@@ -189,11 +189,13 @@ async fn get_safe_data(
                     if accept.to_str().unwrap().to_string().contains( "json") {
                         return HttpResponse::Ok()
                             .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
+                            .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                             .body(list_archive_files_json(archive.clone()))
                     }
                 }
                 return HttpResponse::Ok()
                     .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
+                    .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                     .body(list_archive_files(archive.clone()))
             }
         };
@@ -238,10 +240,12 @@ async fn download_data_body(
                     HttpResponse::Ok()
                         .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
                         .insert_header(get_content_type_from_filename(path_str))
+                        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                         .body(data)
                 } else {
                     HttpResponse::Ok()
                         .insert_header(CacheControl(vec![CacheDirective::MaxAge(31536000u32)]))
+                        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                         .body(data)
                 }
             } else {
@@ -250,10 +254,12 @@ async fn download_data_body(
                     HttpResponse::Ok()
                         .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
                         .insert_header(get_content_type_from_filename(path_str))
+                        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                         .body(data)
                 } else {
                     HttpResponse::Ok()
                         .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned())))
+                        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
                         .body(data)
                 }
             }
@@ -328,8 +334,16 @@ fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
             .collect::<Vec<String>>();
         subdomain_parts.append(&mut path_parts.clone());
         subdomain_parts
-    } else {
+    } else if is_xor(&hostname.to_string()) {
+        let mut subdomain_parts = Vec::new();
+        subdomain_parts.push(hostname.to_string());
         let path_parts = path.split("/")
+            .map(str::to_string)
+            .collect::<Vec<String>>();
+        subdomain_parts.append(&mut path_parts.clone());
+        subdomain_parts
+    } else {
+    let path_parts = path.split("/")
             .map(str::to_string)
             .collect::<Vec<String>>();
         path_parts.clone()

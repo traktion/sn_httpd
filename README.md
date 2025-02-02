@@ -1,15 +1,17 @@
-# antTP
+# AntTP
 
 ## Background
 
 Autonomi (a.k.a. Safe Network) is a distributed data network where both mutable and immutable data can be stored. It can
 considered as a best of class web3 experience.
 
-antTP is a HTTP service which serves data from Autonomi over conventional HTTP connections. This allows regular
+AntTP is a HTTP service which serves data from Autonomi over conventional HTTP connections. This allows regular
 web browsers (and other apps) to retrieve data from Autonomi without needing any client libraries, CLIs, etc.
 
 Users can either spin up a local antTP service or deploy one to a public environment. This enables developers to
 integrate with Autonomi in a more conventional way and gives end users a conventional browsing experience.
+
+AntTP was formally known as sn_httpd.
 
 ## Features
 

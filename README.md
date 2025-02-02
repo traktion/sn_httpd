@@ -15,15 +15,11 @@ integrate with Autonomi in a more conventional way and gives end users a convent
 
 `antTP` currently provides the following:
 
-- Data retrieval from Autonomi using `/xor/[XOR_ADDRESS]`. Data is streamed directly from Autonomi to reduce
-  latency and allows clients to immediately consume the data.
 - Data retrieval from Autonomic using archives for human readable naming `/[ARCHIVE_XOR_ADDRESS]/[MY_FILE_NAME]`. Enables
   regular static sites to be uploaded as an archive, with files browsed by file name.
 - Routing from URLs to specific `[XOR_ADDRESS]` or `[FILE_NAME]`. Enables SPA (single page apps) such as Angular or
-  React to be hosted (once a routeMap is provided - see [example-config](app-conf.json) (DISABLED TEMPORARILY!)
-- Experimental support for DNS style lookups, using registers to provide `/[DNS_NAME]/[MY_FILE_NAME]`. More to follow!
-- Hosting of conventional static files using `/static`.
-- Native integration of the `sn_client` libraries into Actix web framework. These are both written in Rust to provide
+  React to be hosted (once a routeMap is provided - see [example-config](app-conf.json)
+- Native integration of the `autonomi` libraries into Actix web framework. These are both written in Rust to provide
   smooth integration. As Actix is core to `antTP`, it can be extended for specific use cases easily. 
   
 ## TODO
@@ -33,6 +29,7 @@ integrate with Autonomi in a more conventional way and gives end users a convent
   will allow self-service for site authors to publish their site on your `antTP` instance - the backend data is
   always on Autonomi, irrespective of where `antTP` is hosted!
 - Refactoring, performance, stability - `antTP` is highly experimental and should only be used by the adventurous!
+- Unit testing
 
 ## Build Instructions
 
@@ -97,10 +94,10 @@ Where:
 
 ### Archive Upload
 
-To upload a current directory to Autonomi as an archive, do the following:
+To upload a directory to Autonomi as an archive, do the following:
 
 - `cd your/directory`
-- `autonomi file upload -p -x ./`
+- `ant file upload -p -x <directory>`
 
 This command will return information about the uploads and summarise with something like:
 
@@ -111,11 +108,11 @@ At address: 387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787`
 
 The 'At address' is the archive address and you can now reference the uploaded files like:
 
-Via a proxy with DNS set to 6d70bf50aec7ebb0f1b9ff5a98e2be2f9deb2017515a28d6aea0c6f80a9f44dda43d61a01fd64bc32265b41842ad4c8ef51b22748de068f550e39ebf88495a3e99c4481019d10ad513d0157fb2e679b3:
-`http://traktion.autonomi/1_bYTCL7G4KbcR_Y4rd78OhA.png` 
+Via a proxy (to localhost:8080):
+`http://387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg` 
 
 Or via direct request:
-`http://localhost:8082/387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg`
+`http://localhost:8080/387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg`
 
 ### App Configuration
 
@@ -126,30 +123,6 @@ e.g. `/[XOR_ADDRESS]/[OTHER_FILES]`. The config can have any file name as only t
 
 Given each change to the App Configuration will result in a different XOR address, a form of DNS can be used to map a
 name to an XOR address.
-
-At the time of writing, only a single name can be referenced per `antTP` instance. This will change once the register
-interface has been finalised, to allow register history to be retrieved.
-
-To create a site register (for the specific site/app):
-
-`autonomi register create [SITE_REGISTER]`
-
-To point the register at your App Configuration:
-
-`autonomi register edit [SITE_REGISTER] [CONFIG_XOR_ADDRESS]`
-
-When the App Configuration is updated, repeat the above with its new XOR address.
-
-To create a DNS register for the `antTP` instance, use the CLI:
-
-`autonomi register create [DNS_REGISTER]`
-
-To add/edit a name, edit the register to append the site register:
-
-`autonomi register edit [REGISTER_ADDRESS] "[APP_NAME],[APP_ADDRESS]"`
-
-Once completed, `/[APP_NAME]` will resolve to the App Configuration and any path after this point will reference
-the App Configuration, e.g. with `/myapp/myfile`, `myfile` can be in the `dataMap` and route to an XOR address.
 
 ### Example site - IMIM!
 

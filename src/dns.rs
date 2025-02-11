@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use autonomi::Client;
-use autonomi::client::registers::RegisterAddress;
+use autonomi::register::RegisterAddress;
 use bls::PublicKey;
-use color_eyre::Report;
-use log::{debug, info};
-use xor_name::XorName;
+use log::{debug};
 
 #[derive(Clone)]
 pub struct Dns {
@@ -22,7 +20,7 @@ impl Dns {
         }
     }
 
-    pub async fn resolve_direct(&self, addr: String, use_name: bool) -> color_eyre::Result<String> {
+    /*pub async fn resolve_direct(&self, addr: String, use_name: bool) -> color_eyre::Result<String> {
         let secret_key = bls::SecretKey::random(); // todo: get owner's key
         let public_key = secret_key.public_key();
         let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, public_key)?;
@@ -40,11 +38,11 @@ impl Dns {
 
         info!("Trying to retrieve DNS register [{}]", printing_name);
 
-        match self.client.register_get(address).await {
+        match self.client.register_get(&address).await {
             Ok(register) => {
                 debug!("Successfully retrieved DNS register [{}]", printing_name);
 
-                let entries = register.clone().values();
+                let entries = register.clone();
 
                 // print all entries
                 for entry in entries.clone() {
@@ -56,7 +54,7 @@ impl Dns {
                     if name == addr {
                         debug!("Found DNS entry - name [{}], data: [{}]", name, data);
                         let (dns_address, _) = self.parse_addr(&data, false, public_key.clone())?;
-                        match self.client.register_get(dns_address).await {
+                        match self.client.register_get(&dns_address).await {
                             Ok(site_register) => {
                                 let entry = site_register.clone().values();
                                 let site_entry_data = entry.last().expect("Failed to retrieve latest site register entry").to_vec();
@@ -81,9 +79,9 @@ impl Dns {
                 return Err(error.into());
             }
         }
-    }
+    }*/
 
-    pub async fn resolve(&self, key: String, use_name: bool) -> color_eyre::Result<String> {
+    /*pub async fn resolve(&self, key: String, use_name: bool) -> color_eyre::Result<String> {
        match self.cache.contains_key(&key) {
            true => {
                let value = self.cache.get(&key).unwrap().clone();
@@ -94,16 +92,16 @@ impl Dns {
                self.resolve_direct(key, use_name).await
            }
        }
-    }
+    }*/
 
-    pub async fn load_cache(&mut self, use_name: bool) {
+    /*pub async fn load_cache(&mut self, use_name: bool) {
         let secret_key = bls::SecretKey::random(); // todo: get owner's key
         let public_key = secret_key.public_key();
         let (address, printing_name) = self.parse_addr(self.dns_register.as_str(), use_name, public_key).unwrap();
 
         info!("Trying to retrieve DNS register [{}]", printing_name);
 
-        match self.client.register_get(address).await {
+        match self.client.register_get(&address).await {
             Ok(register) => {
                 debug!("Successfully retrieved DNS register [{}]", printing_name);
 
@@ -119,7 +117,7 @@ impl Dns {
 
                     debug!("Found DNS entry - name [{}], data: [{}]", name, data);
                     let (dns_address, _) = self.parse_addr(&data, false, public_key.clone()).unwrap();
-                    match self.client.register_get(dns_address).await {
+                    match self.client.register_get(&dns_address).await {
                         Ok(site_register) => {
                             let entry = site_register.clone().values();
                             let site_entry_data = entry.last().expect("Failed to retrieve latest site register entry").to_vec();
@@ -141,9 +139,9 @@ impl Dns {
                 return
             }
         }
-    }
+    }*/
 
-    fn parse_addr(
+    /*fn parse_addr(
         &self,
         address_str: &str,
         use_name: bool,
@@ -151,13 +149,12 @@ impl Dns {
     ) -> color_eyre::Result<(RegisterAddress, String)> {
         if use_name {
             debug!("Parsing address as name");
-            let user_metadata = XorName::from_content(address_str.as_bytes());
-            let addr = RegisterAddress::new(user_metadata, pk);
-            Ok((addr, format!("'{address_str}' at {addr}")))
+            let addr = RegisterAddress::new(pk);
+            Ok((addr.clone(), format!("'{address_str}' at {addr}")))
         } else {
             debug!("Parsing address as hex");
             let addr = RegisterAddress::from_hex(address_str).expect("Could not parse hex string");
             Ok((addr, format!("at {address_str}")))
         }
-    }
+    }*/
 }

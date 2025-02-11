@@ -1,10 +1,11 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use autonomi::Client;
-use autonomi::client::data::{DataAddr, GetError};
+use autonomi::client::data::{DataAddr};
 use autonomi::client::files::archive_public::{ArchiveAddr, PublicArchive};
+use autonomi::client::GetError;
 use bytes::Bytes;
-use log::{info, error, debug, warn};
+use log::{debug};
 
 #[derive(Clone)]
 pub struct CachingClient {
@@ -25,7 +26,7 @@ impl CachingClient {
         if !cached_data.is_empty() {
             Ok(PublicArchive::from_bytes(cached_data)?)
         } else {
-            let data = self.client.data_get_public(addr).await?;
+            let data = self.client.data_get_public(addr.as_ref()).await?;
             self.write_file(addr, data.to_vec()).await;
             Ok(PublicArchive::from_bytes(data)?)
         }
@@ -38,7 +39,7 @@ impl CachingClient {
             Ok(cached_data)
         } else {
             debug!("getting non-cached data for {:?} from network", addr);
-            let data = self.client.data_get_public(addr).await?;
+            let data = self.client.data_get_public(addr.as_ref()).await?;
             self.write_file(addr, data.to_vec()).await;
             Ok(data)
         }

@@ -5,41 +5,29 @@ mod config;
 mod caching_archive;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, HttpRequest};
-use actix_web::http::header::{CacheControl, CacheDirective, ContentRange, ContentRangeSpec, ContentType, ETag, EntityTag};
+use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
-use log::{info, error, debug, warn};
+use log::{info, debug, warn};
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
-use std::{fs};
 use std::collections::HashMap;
-use std::fs::{File, create_dir_all, Metadata};
-use std::io::{empty, Write};
 use std::path::PathBuf;
-use std::time::Instant;
 use ::autonomi::Client;
-use ::autonomi::client::address::str_to_addr;
-use ::autonomi::client::data::{ChunkAddr, DataAddr};
+use ::autonomi::client::data::{DataAddr};
 use ::autonomi::client::files::archive_public::PublicArchive;
 use ::autonomi::Network::ArbitrumSepolia;
-use actix_http::{header, HttpMessage};
+use actix_http::{header};
 use actix_http::header::IF_NONE_MATCH;
-use actix_web::dev::{ConnectionInfo, PeerAddr};
+use actix_web::dev::{ConnectionInfo};
 use actix_web::web::Data;
 use ant_evm::EvmWallet;
-use bytes::{Bytes};
-use async_stream::stream;
 use color_eyre::{Report, Result};
-use tempfile::{tempdir};
-use futures::{StreamExt};
 use globset::{Glob};
 use awc::Client as AwcClient;
-use chrono::{DateTime, Utc};
-use clap::builder::Str;
-use color_eyre::eyre::Context;
+use chrono::{DateTime};
 use crate::autonomi::Autonomi;
 use crate::caching_archive::CachingClient;
-use crate::proxy::Proxy;
 use crate::dns::Dns;
 use crate::config::AppConfig;
 
@@ -70,8 +58,8 @@ async fn main() -> std::io::Result<()> {
     // initialise safe network connection and files api
     let autonomi_client = Autonomi::new(app_config.clone()).init().await;
     let evm_wallet = EvmWallet::new_with_random_wallet(ArbitrumSepolia);
-    let mut dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
-    dns.load_cache(false).await;
+    //let mut dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
+    //dns.load_cache(false).await;
 
     info!("Starting listener");
 
@@ -88,7 +76,7 @@ async fn main() -> std::io::Result<()> {
             //.app_data(Data::new(files_api.clone()))
             .app_data(Data::new(autonomi_client.clone()))
             .app_data(Data::new(AwcClient::default()))
-            .app_data(Data::new(dns.clone()))
+            //.app_data(Data::new(dns.clone()))
             .app_data(Data::new(evm_wallet.clone()))
     })
         .bind(bind_socket_addr)?
@@ -101,21 +89,22 @@ async fn get_safe_data(
     path: web::Path<String>,
     autonomi_client_data: Data<Client>,
     conn: ConnectionInfo,
-    dns_data: Data<Dns>,
+    //dns_data: Data<Dns>,
 ) -> impl Responder {
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
     let (archive_name, archive_file_name) = assign_path_parts(path_parts.clone());
     let autonomi_client = autonomi_client_data.get_ref().clone();
-    let dns = dns_data.get_ref();
+    //let dns = dns_data.get_ref();
 
     info!("archive_name [{}], archive_file_name [{}]", archive_name, archive_file_name);
 
+    let archive_addr = archive_name;
     // resolve chunk address for config using DNS
-    let archive_addr = match resolve_chunk_address(dns.clone(), &archive_name).await {
+    /*let archive_addr = match resolve_chunk_address(dns.clone(), &archive_name).await {
         Ok(value) => value,
         Err(_) => return HttpResponse::NotFound()
             .body(format!("Failed to resolve DNS name [{:?}]", archive_name)),
-    };
+    };*/
 
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (archive, is_archive, xor_addr) = if archive_addr.to_lowercase() != XOR_PATH {
@@ -139,7 +128,7 @@ async fn get_safe_data(
         return HttpResponse::NotFound().body(format!("Failed to download [{:?}]", archive_file_name));
     };
 
-    if (is_archive) {
+    if is_archive {
         info!("Retrieving file from archive [{:x}]", xor_addr);
 
         // load config from subdomain (of .autonomi) or path root
@@ -229,7 +218,7 @@ async fn download_data_body(
     let mut bytes_read = 0;
 
     info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
-    match autonomi_client.data_get_public(xor_name).await {
+    match autonomi_client.data_get_public(xor_name.as_ref()).await {
         Ok(data) => {
             chunk_count += 1;
             bytes_read = data.len();
@@ -360,14 +349,14 @@ fn assign_path_parts(path_parts: Vec<String>) -> (String, String) {
     }
 }
 
-async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
+/*async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
     if chunk_address == XOR_PATH || is_xor(chunk_address) {
         debug!("Chunk address is XOR address [{}]", chunk_address);
         Ok(chunk_address.clone())
     } else {
         dns.resolve(chunk_address.clone(), false).await
     }
-}
+}*/
 
 fn is_xor_len(chunk_address: &String) -> bool {
     chunk_address.len() == 64
@@ -415,12 +404,12 @@ async fn get_config(archive: PublicArchive, autonomi_client: CachingClient, arch
 
                     Ok(config)
                 }
-                Err(e) => {
+                Err(_e) => {
                     Ok(Config::default())
                 }
             }
         },
-        Err(e) => Ok(Config::default())
+        Err(_e) => Ok(Config::default())
     }
 }
 

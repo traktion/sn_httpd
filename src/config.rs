@@ -2,14 +2,11 @@ use std::env::args;
 use std::net::SocketAddr;
 use anyhow::anyhow;
 use log::info;
-use url::Url;
 
 #[derive(Clone)]
 pub struct AppConfig {
     pub bind_socket_addr: SocketAddr,
-    pub static_dir: String,
-    pub network_peer_url: Url,
-    pub dns_register: String
+    pub static_dir: String
 }
 
 impl AppConfig {
@@ -19,36 +16,19 @@ impl AppConfig {
         args_received.next();
 
         // Read the network contact socket address from first arg passed
-        let bind_addr = args_received
-            .next().expect("No bind address provided");
+        let bind_addr = args_received.next().unwrap_or_else(|| "0.0.0.0:8080".to_string());
         let bind_socket_addr: SocketAddr = bind_addr
             .parse()
             .map_err(|err| anyhow!("Invalid bind socket address: {}", err)).unwrap();
         info!("Bind address [{}]", bind_socket_addr);
 
         // Read the network contact socket address from second arg passed
-        let static_dir = args_received
-            .next().expect("No static dir provided");
+        let static_dir = args_received.next().unwrap_or_else(|| "static".to_string());
         info!("Static file directory: [{}]", static_dir);
-
-        // Read the network contact peer multiaddr from third arg passed
-        let network_contact = args_received
-            .next().expect("No Safe network peer address provided");
-        let network_peer_url: Url = network_contact
-            .parse::<Url>()
-            .map_err(|err| anyhow!("Invalid Safe network peer URL: {}", err)).unwrap();
-        info!("Safe network to be contacted (DEPRECATED!): [{}]", network_peer_url);
-
-        // Read the network contact socket address from second arg passed
-        let dns_register = args_received
-            .next().expect("No DNS register provided");
-        info!("DNS register: [{}]", dns_register);
 
         Ok(AppConfig {
             bind_socket_addr,
-            static_dir,
-            network_peer_url,
-            dns_register
+            static_dir
         })
     }
 }

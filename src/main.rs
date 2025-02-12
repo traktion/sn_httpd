@@ -1,6 +1,4 @@
-mod proxy;
 mod autonomi;
-mod dns;
 mod config;
 mod caching_archive;
 
@@ -28,13 +26,9 @@ use awc::Client as AwcClient;
 use chrono::{DateTime};
 use crate::autonomi::Autonomi;
 use crate::caching_archive::CachingClient;
-use crate::dns::Dns;
 use crate::config::AppConfig;
 
-const CLIENT_KEY: &str = "clientkey";
-const STREAM_CHUNK_SIZE: usize = 2048 * 1024;
 const XOR_PATH: &str = "xor";
-const PROXY_ENABLED: bool = false;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -56,10 +50,8 @@ async fn main() -> std::io::Result<()> {
     let bind_socket_addr = app_config.bind_socket_addr;
 
     // initialise safe network connection and files api
-    let autonomi_client = Autonomi::new(app_config.clone()).init().await;
+    let autonomi_client = Autonomi::new().init().await;
     let evm_wallet = EvmWallet::new_with_random_wallet(ArbitrumSepolia);
-    //let mut dns = Dns::new(autonomi_client.clone(), app_config.clone().dns_register);
-    //dns.load_cache(false).await;
 
     info!("Starting listener");
 
@@ -69,14 +61,11 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(logger)
             .service(Files::new("/static", app_config.static_dir.clone()))
-            //.route("/xor", web::post().to(post_safe_data))
+            //.route("/", web::post().to(post_safe_data))
             .route("/{path:.*}", web::get().to(get_safe_data))
-            //.service(get_account)
             .app_data(Data::new(app_config.clone()))
-            //.app_data(Data::new(files_api.clone()))
             .app_data(Data::new(autonomi_client.clone()))
             .app_data(Data::new(AwcClient::default()))
-            //.app_data(Data::new(dns.clone()))
             .app_data(Data::new(evm_wallet.clone()))
     })
         .bind(bind_socket_addr)?
@@ -92,19 +81,11 @@ async fn get_safe_data(
     //dns_data: Data<Dns>,
 ) -> impl Responder {
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
-    let (archive_name, archive_file_name) = assign_path_parts(path_parts.clone());
+    let (archive_addr, archive_file_name) = assign_path_parts(path_parts.clone());
     let autonomi_client = autonomi_client_data.get_ref().clone();
     //let dns = dns_data.get_ref();
 
-    info!("archive_name [{}], archive_file_name [{}]", archive_name, archive_file_name);
-
-    let archive_addr = archive_name;
-    // resolve chunk address for config using DNS
-    /*let archive_addr = match resolve_chunk_address(dns.clone(), &archive_name).await {
-        Ok(value) => value,
-        Err(_) => return HttpResponse::NotFound()
-            .body(format!("Failed to resolve DNS name [{:?}]", archive_name)),
-    };*/
+    info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
 
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (archive, is_archive, xor_addr) = if archive_addr.to_lowercase() != XOR_PATH {
@@ -213,14 +194,12 @@ async fn download_data_body(
     is_resolved_file_name: bool,
     autonomi_client: Client
 ) -> HttpResponse {
-    let mut chunk_count = 0;
     #[allow(unused_assignments)]
     let mut bytes_read = 0;
 
     info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
     match autonomi_client.data_get_public(xor_name.as_ref()).await {
         Ok(data) => {
-            chunk_count += 1;
             bytes_read = data.len();
             info!("Read [{}] bytes of item [{}] at addr [{}]", bytes_read, path_str, format!("{:x}", xor_name));
             if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
@@ -259,26 +238,9 @@ async fn download_data_body(
     }
 }
 
-fn get_range(request: &HttpRequest) -> (u64, u64, u64) {
-    if let Some(range) = request.headers().get("Range") {
-        let range_str = range.to_str().unwrap();
-        debug!("range header [{}]", range_str);
-        let range_value = range_str.split_once("=").unwrap().1;
-        // todo: cover comma separated too: https://docs.rs/actix-web/latest/actix_web/http/header/enum.Range.html
-        if let Some((range_from_str, range_to_str)) = range_value.split_once("-") {
-            let range_from = range_from_str.parse::<u64>().unwrap_or_else(|_| 0);
-            let range_to = range_to_str.parse::<u64>().unwrap_or_else(|_| u64::MAX);
-            let range_length = range_to - range_from;
-            (range_from, range_to, range_length)
-        } else {
-            (0, u64::MAX, u64::MAX)
-        }
-    } else {
-        (0, u64::MAX, u64::MAX)
-    }
-}
-
-/*async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
+/*
+// experimental file uploads
+async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
     info!("Post file");
     let autonomi_client = autonomi_client_data.get_ref().clone();
     let evm_wallet = evm_wallet_data.get_ref().clone();
@@ -349,15 +311,6 @@ fn assign_path_parts(path_parts: Vec<String>) -> (String, String) {
     }
 }
 
-/*async fn resolve_chunk_address(dns: Dns, chunk_address: &String) -> Result<String> {
-    if chunk_address == XOR_PATH || is_xor(chunk_address) {
-        debug!("Chunk address is XOR address [{}]", chunk_address);
-        Ok(chunk_address.clone())
-    } else {
-        dns.resolve(chunk_address.clone(), false).await
-    }
-}*/
-
 fn is_xor_len(chunk_address: &String) -> bool {
     chunk_address.len() == 64
 }
@@ -372,17 +325,6 @@ fn str_to_xor_name(str: &String) -> Result<XorName> {
         .try_into()
         .expect("Failed to parse XorName from hex string");
     Ok(XorName(xor_name_bytes))
-}
-
-fn calc_cache_max_age(safe_url: &String, is_resolved_file_name: bool) -> u32 {
-    // todo: update when NRS (dynamic XOR URL lookup) is available
-    if !is_resolved_file_name && is_xor(safe_url) {
-        info!("URL is XOR URL (treat as immutable): [{}]", safe_url);
-        31536000u32 // cache 'forever'
-    } else {
-        info!("URL is register URL (treat as mutable): [{}]", safe_url);
-        300 // only cache for 5 mins
-    }
 }
 
 async fn get_config(archive: PublicArchive, autonomi_client: CachingClient, archive_addr: String) -> Result<Config> {
@@ -423,14 +365,6 @@ fn resolve_route(relative_path: String, config: Config, archive_file_name: Strin
         }
     };
     (archive_file_name, false)
-}
-
-fn resolve_file_name(config: Config, relative_path: String) -> Result<(bool, String)> {
-    if is_xor(&relative_path) {
-        Ok((false, relative_path))
-    } else {
-        Err(Report::msg(format!("relative_path is neither XOR nor in the data map [{}]", relative_path)))
-    }
 }
 
 fn resolve_data_addr_from_archive(archive: PublicArchive, path_parts: Vec<String>) -> Result<DataAddr> {
@@ -490,15 +424,6 @@ fn list_archive_files_json(archive: PublicArchive) -> String {
     }
     output.push_str("]");
     output
-}
-
-fn has_index(archive: PublicArchive) -> bool {
-    for key in archive.map().keys() {
-        if key.ends_with("index.html") {
-            return true;
-        }
-    }
-    false
 }
 
 fn get_index(resolved_filename_string: String, archive: PublicArchive, request: &HttpRequest) -> (String, XorName) {

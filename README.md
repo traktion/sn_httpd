@@ -19,6 +19,8 @@ AntTP was formally known as sn_httpd.
 
 - Data retrieval from Autonomic using archives for human readable naming `/[ARCHIVE_XOR_ADDRESS]/[MY_FILE_NAME]`. Enables
   regular static sites to be uploaded as an archive, with files browsed by file name.
+- Proxy server to allow `http://[ARCHIVE_XOR_ADDRESS]/[MY_FILE_NAME]` to be resolved. Allows
+  sites to pivot from a 'root' directory and a smoother user experience.
 - Routing from URLs to specific `[XOR_ADDRESS]` or `[FILE_NAME]`. Enables SPA (single page apps) such as Angular or
   React to be hosted (once a routeMap is provided - see [example-config](app-conf.json)
 - Native integration of the `autonomi` libraries into Actix web framework. These are both written in Rust to provide
@@ -87,12 +89,12 @@ Then build release:
 
 ### Run instructions
 
-`cargo run 127.0.0.1:8080 static https://sn-testnet.s3.eu-west-2.amazonaws.com/network-contacts 4b4a0fa14f00ffdcc2c3dabef49721bdde81e9263cde5e2f4885459685d1f75d9099ecd71284c151e2a835e01b9a3847ea9676560620b9c038f9c6d623384ab1359ebd7ed1ff8add5c8d6e81d75d2742`
+`cargo run 0.0.0.0:8080 static`
 
 Where:
 
-- `https://sn-testnet.s3.eu-west-2.amazonaws.com/network-contacts` is a URL containing a list of peer addresses.
-- `4b4a0fa14f00ffdcc2c3dabef49721bdde81e9263cde5e2f4885459685d1f75d9099ecd71284c151e2a835e01b9a3847ea9676560620b9c038f9c6d623384ab1359ebd7ed1ff8add5c8d6e81d75d2742` is a `DNS_REGISTER`.
+- `0.0.0.0:8080` (optional, default = `0.0.0.0:8080`) is the IP address and port to listen on.
+- `static` (optional, default = `static`) is a directory to host local/static files in.
 
 ### Archive Upload
 
@@ -111,10 +113,10 @@ At address: 387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787`
 The 'At address' is the archive address and you can now reference the uploaded files like:
 
 Via a proxy (to localhost:8080):
-`http://387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg` 
+`http://a0f6fa2b08e868060fe6e57018e3f73294821feaf3fdcf9cd636ac3d11e7e2ac/BegBlag.mp3` 
 
 Or via direct request:
-`http://localhost:8080/387f61da64d2a4c5d2e02ca34660fa2ac4fa6b3604ed8b67a58a3cba6e8ae787/1_SxkGLnSNsMtu0SDrsWW8Wg.jpeg`
+`http://localhost:8080/a0f6fa2b08e868060fe6e57018e3f73294821feaf3fdcf9cd636ac3d11e7e2ac/BegBlag.mp3`
 
 ### App Configuration
 

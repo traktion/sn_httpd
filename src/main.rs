@@ -29,12 +29,14 @@ use crate::caching_archive::CachingClient;
 use crate::config::AppConfig;
 
 const XOR_PATH: &str = "xor";
+const DEFAULT_LOGGING: &'static str = "info,anttp=info,ant_api=warn,ant_client=warn,ant_networking=off,ant_bootstrap=error";
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     route_map: HashMap<String, String>
 }
+
 impl Default for Config {
     fn default () -> Config {
         Config{route_map: HashMap::new()}
@@ -44,7 +46,9 @@ impl Default for Config {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // init logging from RUST_LOG env var with info as default
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default()
+        .default_filter_or(DEFAULT_LOGGING))
+        .init();
 
     let app_config = AppConfig::read_args().expect("Failed to read CLI arguments");
     let bind_socket_addr = app_config.bind_socket_addr;
@@ -83,7 +87,6 @@ async fn get_safe_data(
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
     let (archive_addr, archive_file_name) = assign_path_parts(path_parts.clone());
     let autonomi_client = autonomi_client_data.get_ref().clone();
-    //let dns = dns_data.get_ref();
 
     info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
 

@@ -4,13 +4,13 @@ use anyhow::anyhow;
 use log::info;
 
 #[derive(Clone)]
-pub struct AppConfig {
+pub struct AntTpConfig {
     pub bind_socket_addr: SocketAddr,
     pub static_dir: String
 }
 
-impl AppConfig {
-    pub fn read_args() -> color_eyre::Result<AppConfig> {
+impl AntTpConfig {
+    pub fn read_args() -> color_eyre::Result<AntTpConfig> {
         // Skip executable name form args
         let mut args_received = args();
         args_received.next();
@@ -26,7 +26,7 @@ impl AppConfig {
         let static_dir = args_received.next().unwrap_or_else(|| "static".to_string());
         info!("Static file directory: [{}]", static_dir);
 
-        Ok(AppConfig {
+        Ok(AntTpConfig {
             bind_socket_addr,
             static_dir
         })

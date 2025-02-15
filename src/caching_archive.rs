@@ -5,7 +5,10 @@ use autonomi::client::data::{DataAddr};
 use autonomi::client::files::archive_public::{ArchiveAddr, PublicArchive};
 use autonomi::client::GetError;
 use bytes::Bytes;
-use log::{debug};
+use log::{debug, info};
+use xor_name::XorName;
+use crate::{str_to_xor_name};
+use crate::archive_helper::ArchiveHelper;
 
 #[derive(Clone)]
 pub struct CachingClient {
@@ -32,15 +35,15 @@ impl CachingClient {
         }
     }
 
-    pub async fn data_get_public(&self, addr: DataAddr) -> Result<Bytes, GetError> {
-        let cached_data = self.read_file(addr).await;
+    pub async fn data_get_public(&self, addr: &DataAddr) -> Result<Bytes, GetError> {
+        let cached_data = self.read_file(*addr).await;
         if !cached_data.is_empty() {
             debug!("getting cached data for {:?} from local storage", addr);
             Ok(cached_data)
         } else {
             debug!("getting non-cached data for {:?} from network", addr);
-            let data = self.client.data_get_public(addr.as_ref()).await?;
-            self.write_file(addr, data.to_vec()).await;
+            let data = self.client.data_get_public(addr).await?;
+            self.write_file(*addr, data.to_vec()).await;
             Ok(data)
         }
     }
@@ -62,6 +65,34 @@ impl CachingClient {
             Err(_) => {
                 Bytes::from("")
             }
+        }
+    }
+
+    pub async fn config_get_public(&self, archive: PublicArchive, archive_addr: String) -> color_eyre::Result<crate::app_config::AppConfig> {
+        let archive_addr_xorname = str_to_xor_name(&archive_addr) // todo: migrate str_to_xor_name
+            .unwrap_or_else(|_| XorName::default());
+
+        let path_str = "app-conf.json";
+        let mut path_parts = Vec::<String>::new();
+        path_parts.push("ignore".to_string());
+        path_parts.push(path_str.to_string());
+        match ArchiveHelper::new(archive).resolve_data_addr(path_parts) {
+            Ok(data) => {
+                info!("Downloading app-config [{}] with addr [{}] from archive [{}]", path_str, format!("{:x}", data), format!("{:x}", archive_addr_xorname));
+                match self.data_get_public(&data).await {
+                    Ok(data) => {
+                        let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
+                        debug!("json [{}]", json);
+                        let config: crate::app_config::AppConfig = serde_json::from_str(&json.as_str()).unwrap_or(crate::app_config::AppConfig::default());
+
+                        Ok(config)
+                    }
+                    Err(_e) => {
+                        Ok(crate::app_config::AppConfig::default())
+                    }
+                }
+            },
+            Err(_e) => Ok(crate::app_config::AppConfig::default())
         }
     }
 }

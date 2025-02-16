@@ -4,6 +4,7 @@ use autonomi::files::PublicArchive;
 use chrono::DateTime;
 use color_eyre::{Report, Result};
 use log::debug;
+use xor_name::XorName;
 
 #[derive(Clone)]
 pub struct ArchiveHelper {
@@ -81,5 +82,17 @@ impl ArchiveHelper {
         } else {
             Err(Report::msg(format!("Failed to find item [{}] in archive", path_buf.clone().display())))
         }*/
+    }
+
+    pub fn get_index(&self, request_path: String, resolved_filename_string: String) -> (String, XorName) {
+        // hack to return index.html when present in directory root
+        for key in self.archive.map().keys() {
+            if key.ends_with(resolved_filename_string.to_string()) {
+                let path_string = request_path + key.to_str().unwrap();
+                let data_addr = self.archive.map().get(key).unwrap().0;
+                return (path_string, data_addr)
+            }
+        }
+        (String::new(), XorName::default())
     }
 }

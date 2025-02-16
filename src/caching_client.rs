@@ -7,7 +7,6 @@ use autonomi::client::GetError;
 use bytes::Bytes;
 use log::{debug, info};
 use xor_name::XorName;
-use crate::{str_to_xor_name};
 use crate::archive_helper::ArchiveHelper;
 
 #[derive(Clone)]
@@ -68,10 +67,7 @@ impl CachingClient {
         }
     }
 
-    pub async fn config_get_public(&self, archive: PublicArchive, archive_addr: String) -> color_eyre::Result<crate::app_config::AppConfig> {
-        let archive_addr_xorname = str_to_xor_name(&archive_addr) // todo: migrate str_to_xor_name
-            .unwrap_or_else(|_| XorName::default());
-
+    pub async fn config_get_public(&self, archive: PublicArchive, archive_addr_xorname: XorName) -> color_eyre::Result<crate::app_config::AppConfig> {
         let path_str = "app-conf.json";
         let mut path_parts = Vec::<String>::new();
         path_parts.push("ignore".to_string());
@@ -83,7 +79,8 @@ impl CachingClient {
                     Ok(data) => {
                         let json = String::from_utf8(data.to_vec()).unwrap_or(String::new());
                         debug!("json [{}]", json);
-                        let config: crate::app_config::AppConfig = serde_json::from_str(&json.as_str()).unwrap_or(crate::app_config::AppConfig::default());
+                        let config: crate::app_config::AppConfig = serde_json::from_str(&json.as_str())
+                            .unwrap_or(crate::app_config::AppConfig::default());
 
                         Ok(config)
                     }

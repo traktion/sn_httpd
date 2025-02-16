@@ -1,6 +1,6 @@
 mod autonomi;
 mod anttp_config;
-mod caching_archive;
+mod caching_client;
 mod app_config;
 mod archive_helper;
 
@@ -8,7 +8,7 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logge
 use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
-use log::{info, debug, warn};
+use log::{info, warn};
 use std::convert::TryInto;
 use std::path::PathBuf;
 use ::autonomi::Client;
@@ -21,12 +21,10 @@ use actix_web::dev::{ConnectionInfo};
 use actix_web::web::Data;
 use ant_evm::EvmWallet;
 use color_eyre::{Result};
-use globset::{Glob};
 use awc::Client as AwcClient;
 use crate::autonomi::Autonomi;
-use crate::caching_archive::CachingClient;
+use crate::caching_client::CachingClient;
 use crate::anttp_config::AntTpConfig;
-use crate::app_config::AppConfig;
 use crate::archive_helper::ArchiveHelper;
 
 const DEFAULT_LOGGING: &'static str = "info,anttp=info,ant_api=warn,ant_client=warn,ant_networking=off,ant_bootstrap=error";
@@ -78,43 +76,27 @@ async fn get_public_data(
     info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
 
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
-    let (archive, is_archive, xor_addr) = if is_xor(&archive_addr) {
-        let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
-        match caching_autonomi_client.archive_get_public(archive_addr_xorname).await {
-            Ok(value) => {
-                info!("Found archive at [{:x}]", archive_addr_xorname);
-                (value, true, archive_addr_xorname)
-            },
-            Err(_) => {
-                info!("No archive found at [{:x}]. Treating as XOR address", archive_addr_xorname);
-                (PublicArchive::new(), false, archive_addr_xorname)
-            }
-        }
-    } else if is_xor(&archive_file_name) {
-        let archive_file_name_xorname = str_to_xor_name(&archive_file_name).unwrap();
-        info!("Found XOR address [{:x}]", archive_file_name_xorname);
-        (PublicArchive::new(), false, archive_file_name_xorname)
-    } else {
-        warn!("Failed to download [{:?}]", archive_file_name);
-        return HttpResponse::NotFound().body(format!("Failed to download [{:?}]", archive_file_name));
-    };
+    let (is_found, archive, is_archive, xor_addr) = resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
 
-    if is_archive {
+    if !is_found {
+        HttpResponse::NotFound().body(format!("Failed to download [{:?}], [{:?}]", archive_addr, archive_file_name))
+    } else if is_archive {
         info!("Retrieving file from archive [{:x}]", xor_addr);
 
-        // load config from subdomain (of .autonomi) or path root
-        let config = match caching_autonomi_client.config_get_public(archive.clone(), archive_addr.clone()).await {
-            Ok(value) => value,
+        // load app_config from archive and resolve route
+        let archive_relative_path = path_parts[1..].join("/").to_string();
+        let (resolved_relative_path_route, has_route_map) = match caching_autonomi_client.config_get_public(archive.clone(), xor_addr).await {
+            Ok(app_config) => {
+                // resolve route
+                app_config.resolve_route(archive_relative_path.clone(), archive_file_name.clone())
+            },
             Err(err) => {
                 warn!("Failed to load config from map [{:?}]", err);
                 return HttpResponse::InternalServerError()
                     .body(format!("Failed to load config from map [{:?}]", err))
             },
         };
-
-        // resolve route
-        let (resolved_relative_path_route, has_route_map) = resolve_route(path_parts.clone()[1..].join("/").to_string(), config.clone(), archive_file_name.clone());
-
+        
         // resolve file name to chunk address
         let (path_string, data_addr) = if is_xor(&resolved_relative_path_route) {
             let path_string = resolved_relative_path_route.clone();
@@ -132,20 +114,22 @@ async fn get_public_data(
 
             let archive_helper = ArchiveHelper::new(archive.clone());
             if has_route_map {
-                get_index(resolved_relative_path_route, archive.clone(), &request)
+                archive_helper.get_index(request.path().to_string(), resolved_relative_path_route)
             } else if !resolved_relative_path_route.is_empty() {
-                let data_addr = match archive_helper.resolve_data_addr(path_parts.clone()) {
-                    Ok(value) => value,
+                match archive_helper.resolve_data_addr(path_parts.clone()) {
+                    Ok(data_addr) => {
+                        info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
+                        (resolved_relative_path_route, data_addr)
+                    }
                     Err(err) => {
                         warn!("{:?}", err);
                         return HttpResponse::NotFound()
                             .body(format!("{:?}", err))
                     }
-                };
-                info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
-                (resolved_relative_path_route, data_addr)
+                }
             } else {
                 info!("List files in archive [{}]", archive_addr);
+                // todo: set header when js file
                 return HttpResponse::Ok()
                     .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
                     .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
@@ -163,11 +147,33 @@ async fn get_public_data(
             }
         }
 
-        download_data_body(path_parts[1..].join("/").to_string(), data_addr, true, autonomi_client).await
+        download_data_body(archive_relative_path, data_addr, true, autonomi_client).await
     } else {
-        // autonomi XOR addr
-        info!("Retrieving file from [{:x}]", xor_addr);
+        info!("Retrieving file from XOR [{:x}]", xor_addr);
         download_data_body(archive_addr, xor_addr, false, autonomi_client).await
+    }
+}
+
+async fn resolve_archive_or_file(caching_autonomi_client: &CachingClient, archive_addr: &String, archive_file_name: &String) -> (bool, PublicArchive, bool, XorName) {
+    if is_xor(&archive_addr) {
+        let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
+        match caching_autonomi_client.archive_get_public(archive_addr_xorname).await {
+            Ok(public_archive) => {
+                info!("Found archive at [{:x}]", archive_addr_xorname);
+                (true, public_archive, true, archive_addr_xorname)
+            }
+            Err(_) => {
+                info!("No archive found at [{:x}]. Treating as XOR address", archive_addr_xorname);
+                (true, PublicArchive::new(), false, archive_addr_xorname)
+            }
+        }
+    } else if is_xor(&archive_file_name) {
+        let archive_file_name_xorname = str_to_xor_name(&archive_file_name).unwrap();
+        info!("Found XOR address [{:x}]", archive_file_name_xorname);
+        (true, PublicArchive::new(), false, archive_file_name_xorname)
+    } else {
+        warn!("Failed to find archive or filename [{:?}]", archive_file_name);
+        (false, PublicArchive::new(), false, XorName::default())
     }
 }
 
@@ -311,30 +317,6 @@ fn str_to_xor_name(str: &String) -> Result<XorName> {
         .try_into()
         .expect("Failed to parse XorName from hex string");
     Ok(XorName(xor_name_bytes))
-}
-
-fn resolve_route(relative_path: String, config: AppConfig, archive_file_name: String) -> (String, bool) {
-    for (key, value) in config.route_map {
-        let glob = Glob::new(key.as_str()).unwrap().compile_matcher();
-        debug!("route mapper comparing path [{}] with glob [{}]", relative_path, key);
-        if glob.is_match(&relative_path) {
-            info!("route mapper resolved path [{}] to [{}] with glob [{}]", relative_path, key, value);
-            return (value, true);
-        }
-    };
-    (archive_file_name, false)
-}
-
-fn get_index(resolved_filename_string: String, archive: PublicArchive, request: &HttpRequest) -> (String, XorName) {
-    // hack to return index.html when present in directory root
-    for key in archive.map().keys() {
-        if key.ends_with(resolved_filename_string.to_string()) {
-            let path_string = request.path().to_string() + key.to_str().unwrap();
-            let data_addr = archive.map().get(key).unwrap().0;
-            return (path_string, data_addr)
-        }
-    }
-    (String::new(), XorName::default())
 }
 
 fn get_content_type_from_filename(filename: String) -> ContentType {

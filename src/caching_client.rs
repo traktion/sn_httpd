@@ -1,3 +1,4 @@
+use std::{env, fs};
 use std::fs::File;
 use std::io::{Read, Write};
 use autonomi::Client;
@@ -12,13 +13,22 @@ use crate::archive_helper::ArchiveHelper;
 #[derive(Clone)]
 pub struct CachingClient {
     client: Client,
+    cache_dir: String,
 }
 
 impl CachingClient {
 
     pub fn new(client: Client) -> Self {
+        let cache_dir = env::temp_dir().to_str().unwrap().to_owned() + "/anttp/cache/";
+        CachingClient::create_tmp_dir(cache_dir.clone());
         Self {
-            client,
+            client, cache_dir,
+        }
+    }
+    
+    fn create_tmp_dir(cache_dir: String) {
+        if !fs::exists(cache_dir.clone()).unwrap() {
+            fs::create_dir_all(cache_dir.clone()).unwrap_or_default()
         }
     }
 
@@ -48,13 +58,13 @@ impl CachingClient {
     }
 
     pub async fn write_file(&self, addr: ArchiveAddr, data: Vec<u8>) {
-        let path_string = "cache/".to_owned() + format!("{:x}", addr).as_str();
+        let path_string = self.cache_dir.clone() + format!("{:x}", addr).as_str();
         let mut file = File::create(path_string).unwrap();
         file.write_all(data.as_slice()).unwrap();
     }
 
     pub async fn read_file(&self, addr: ArchiveAddr) -> Bytes {
-        let path_string = "cache/".to_owned() + format!("{:x}", addr).as_str();
+        let path_string = self.cache_dir.clone() + format!("{:x}", addr).as_str();
         match File::open(path_string) {
             Ok(mut file) => {
                 let mut contents = Vec::new();

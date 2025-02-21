@@ -3,7 +3,7 @@ use autonomi::data::DataAddr;
 use autonomi::files::PublicArchive;
 use chrono::DateTime;
 use color_eyre::{Report, Result};
-use log::debug;
+use log::{debug};
 use xor_name::XorName;
 
 #[derive(Clone)]

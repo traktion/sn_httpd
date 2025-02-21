@@ -8,7 +8,7 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logge
 use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::convert::TryInto;
 use std::path::PathBuf;
 use ::autonomi::Client;
@@ -78,87 +78,93 @@ async fn get_public_data(
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (is_found, archive, is_archive, xor_addr) = resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
 
-    if is_found {
-        if is_archive {
-            info!("Retrieving file from archive [{:x}]", xor_addr);
-
-            // load app_config from archive and resolve route
-            let archive_relative_path = path_parts[1..].join("/").to_string();
-            let (resolved_relative_path_route, has_route_map) = match caching_autonomi_client.config_get_public(archive.clone(), xor_addr).await {
-                Ok(app_config) => {
-                    // resolve route
-                    app_config.resolve_route(archive_relative_path.clone(), archive_file_name.clone())
-                },
-                Err(err) => {
-                    warn!("Failed to load config from map [{:?}]", err);
-                    return HttpResponse::InternalServerError()
-                        .body(format!("Failed to load config from map [{:?}]", err))
-                },
-            };
-
-            // resolve file name to chunk address
-            let (path_string, data_addr, is_listing, has_moved_permanently, is_not_found) = if is_xor(&resolved_relative_path_route) {
-                let path_string = resolved_relative_path_route.clone();
-                let data_addr = str_to_xor_name(&resolved_relative_path_route).unwrap();
-                info!("Resolved path is XOR address [{}]", resolved_relative_path_route);
-                (path_string, data_addr, false, false, false)
-            } else {
-                if has_moved_permanently(&request.path(), &resolved_relative_path_route) {
-                    (resolved_relative_path_route, DataAddr::default(), true, true, false)
-                } else if has_route_map {
-                    // retrieve route map index
-                    let archive_helper = ArchiveHelper::new(archive.clone());
-                    let (resolved_relative_path_route, data_addr) = archive_helper.get_index(request.path().to_string(), resolved_relative_path_route);
-                    (resolved_relative_path_route, data_addr, false, false, false)
-                } else if resolved_relative_path_route.is_empty() {
-                    // retrieve path and data address
-                    let archive_helper = ArchiveHelper::new(archive.clone());
-                    match archive_helper.resolve_data_addr(path_parts.clone()) {
-                        Ok(data_addr) => {
-                            let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
-                            info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", data_addr));
-                            (resolved_relative_path_route, data_addr, false, false, false)
-                        }
-                        Err(err) => {
-                            (resolved_relative_path_route, DataAddr::default(), false, false, true)
-                        }
-                    }
-                } else {
-                    // retrieve file listing
-                    (resolved_relative_path_route, DataAddr::default(), true, false, false)
-                }
-            };
-
-            let is_modified = is_modified(request.headers(), data_addr);
-
-            if has_moved_permanently {
-                info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
-                HttpResponse::MovedPermanently()
-                    .insert_header((header::LOCATION, request.path().to_string() + "/"))
-                    .finish()
-            } else if is_not_found {
-                warn!("Path not found {:?}", path_string);
-                HttpResponse::NotFound().body(format!("{:?}", path_string))
-            } else if !is_modified {
-                info!("ETag matches for path [{}] at address [{}]. Client can use cached version", path_string, format!("{:x}", data_addr));
-                HttpResponse::NotModified().into()
-            } else if is_listing {
-                info!("List files in archive [{}]", archive_addr);
-                let archive_helper = ArchiveHelper::new(archive.clone());
-                // todo: set header when js file
-                HttpResponse::Ok()
-                    .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
-                    .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
-                    .body(archive_helper.list_files(request.headers()))
-            } else {
-                download_data_body(archive_relative_path, data_addr, true, autonomi_client).await
-            }
+    if !is_found {
+        HttpResponse::NotFound().body(format!("Failed to download [{:?}], [{:?}]", archive_addr, archive_file_name))
+    } else if !is_archive {
+        info!("Retrieving file from XOR [{:x}]", xor_addr);
+        if !is_modified(request.headers(), xor_addr) {
+            info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_addr));
+            HttpResponse::NotModified().into()
         } else {
-            info!("Retrieving file from XOR [{:x}]", xor_addr);
-            download_data_body(archive_addr, xor_addr, false, autonomi_client).await
+            download_data_body(archive_addr, xor_addr, is_archive, autonomi_client).await
         }
     } else {
-        HttpResponse::NotFound().body(format!("Failed to download [{:?}], [{:?}]", archive_addr, archive_file_name))
+        info!("Retrieving file from archive [{:x}]", xor_addr);
+
+        // load app_config from archive and resolve route
+        let archive_relative_path = path_parts[1..].join("/").to_string();
+        let (resolved_relative_path_route, has_route_map) = match caching_autonomi_client.config_get_public(archive.clone(), xor_addr).await {
+            Ok(app_config) => {
+                // resolve route
+                app_config.resolve_route(archive_relative_path.clone(), archive_file_name.clone())
+            },
+            Err(err) => {
+                warn!("Failed to load config from map [{:?}]", err);
+                return HttpResponse::InternalServerError()
+                    .body(format!("Failed to load config from map [{:?}]", err))
+            },
+        };
+
+        // resolve file name to chunk address
+        let (path_string, resolved_xor_addr, is_listing, has_moved_permanently, is_not_found)
+            = resolve_from_archive(request.path(), path_parts, &archive, resolved_relative_path_route.clone(), has_route_map);
+
+        let is_modified = is_modified(request.headers(), resolved_xor_addr);
+
+        if has_moved_permanently {
+            info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
+            HttpResponse::MovedPermanently()
+                .insert_header((header::LOCATION, request.path().to_string() + "/"))
+                .finish()
+        } else if is_not_found {
+            warn!("Path not found {:?}", path_string);
+            HttpResponse::NotFound().body(format!("{:?}", path_string))
+        } else if !is_modified {
+            info!("ETag matches for path [{}] at address [{}]. Client can use cached version", path_string, format!("{:x}", resolved_xor_addr));
+            HttpResponse::NotModified().into()
+        } else if is_listing {
+            info!("List files in archive [{}]", archive_addr);
+            let archive_helper = ArchiveHelper::new(archive.clone());
+            // todo: set header when js file
+            HttpResponse::Ok()
+                .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
+                .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
+                .body(archive_helper.list_files(request.headers()))
+        } else {
+            download_data_body(archive_relative_path, resolved_xor_addr, is_archive, autonomi_client).await
+        }
+    }
+}
+
+// todo: create type to contain the returned values
+fn resolve_from_archive(request_path: &str, path_parts: Vec<String>, archive: &PublicArchive, resolved_relative_path_route: String, has_route_map: bool) -> (String, XorName, bool, bool, bool) {
+    if has_moved_permanently(request_path, &resolved_relative_path_route) {
+        debug!("has moved permanently");
+        (resolved_relative_path_route, DataAddr::default(), true, true, false)
+    } else if has_route_map {
+        // retrieve route map index
+        debug!("retrieve route map index");
+        let archive_helper = ArchiveHelper::new(archive.clone());
+        let (resolved_relative_path_route, resolved_xor_addr) = archive_helper.get_index(request_path.to_string(), resolved_relative_path_route);
+        (resolved_relative_path_route, resolved_xor_addr, false, false, false)
+    } else if !resolved_relative_path_route.is_empty() {
+        // retrieve path and data address
+        debug!("retrieve path and data address");
+        let archive_helper = ArchiveHelper::new(archive.clone());
+        match archive_helper.resolve_data_addr(path_parts.clone()) {
+            Ok(resolved_xor_addr) => {
+                let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
+                info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", resolved_xor_addr));
+                (resolved_relative_path_route, resolved_xor_addr, false, false, false)
+            }
+            Err(_err) => {
+                (resolved_relative_path_route, DataAddr::default(), false, false, true)
+            }
+        }
+    } else {
+        // retrieve file listing
+        info!("retrieve file listing");
+        (resolved_relative_path_route, DataAddr::default(), true, false, false)
     }
 }
 
@@ -171,8 +177,10 @@ fn is_modified(headers: &HeaderMap, data_addr: XorName) -> bool {
         let e_tag = headers.get(IF_NONE_MATCH).unwrap().to_str().unwrap();
         let source_e_tag = e_tag.to_string().replace("\"", "");
         let target_e_tag = format!("{:x}", data_addr);
-        source_e_tag == target_e_tag
+        debug!("is_modified == [{}], source_e_tag = [{}], target_e_tag = [{}], IF_NONE_MATCH present", source_e_tag == target_e_tag, source_e_tag, target_e_tag);
+        source_e_tag != target_e_tag
     } else {
+        debug!("is_modified == [true], IF_NONE_MATCH absent");
         true
     }
 }
@@ -206,45 +214,33 @@ async fn download_data_body(
     is_resolved_file_name: bool,
     autonomi_client: Client
 ) -> HttpResponse {
-    #[allow(unused_assignments)]
-    let mut bytes_read = 0;
-
     info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
     match autonomi_client.data_get_public(xor_name.as_ref()).await {
         Ok(data) => {
-            bytes_read = data.len();
-            info!("Read [{}] bytes of item [{}] at addr [{}]", bytes_read, path_str, format!("{:x}", xor_name));
-            let cors_allow_all = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-            if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
-                // cache immutable
-                let immutable_cache_control_header = CacheControl(vec![CacheDirective::MaxAge(31536000u32)]);
-                if path_str.ends_with(".js") {
-                    HttpResponse::Ok()
-                        .insert_header(immutable_cache_control_header)
-                        .insert_header(get_content_type_from_filename(path_str))
-                        .insert_header(cors_allow_all)
-                        .body(data)
-                } else {
-                    HttpResponse::Ok()
-                        .insert_header(immutable_cache_control_header)
-                        .insert_header(cors_allow_all)
-                        .body(data)
-                }
+            info!("Read [{}] bytes of item [{}] at addr [{}]", data.len(), path_str, format!("{:x}", xor_name));
+            let cache_control_header = if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
+                // immutable
+                CacheControl(vec![CacheDirective::MaxAge(31536000u32)])
             } else {
-                // etag
-                let etag_header = ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned()));
-                if path_str.ends_with(".js") {
-                    HttpResponse::Ok()
-                        .insert_header(etag_header)
-                        .insert_header(get_content_type_from_filename(path_str))
-                        .insert_header(cors_allow_all)
-                        .body(data)
-                } else {
-                    HttpResponse::Ok()
-                        .insert_header(etag_header)
-                        .insert_header(cors_allow_all)
-                        .body(data)
-                }
+                // mutable
+                CacheControl(vec![CacheDirective::MaxAge(0u32)])
+            };
+            let etag_header = ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned()));
+            let cors_allow_all = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+
+            if path_str.ends_with(".js") {
+                HttpResponse::Ok()
+                    .insert_header(cache_control_header)
+                    .insert_header(etag_header)
+                    .insert_header(cors_allow_all)
+                    .insert_header(get_content_type_from_filename(path_str)) // todo: why necessary?
+                    .body(data)
+            } else {
+                HttpResponse::Ok()
+                    .insert_header(cache_control_header)
+                    .insert_header(etag_header)
+                    .insert_header(cors_allow_all)
+                    .body(data)
             }
         }
         Err(e) => {

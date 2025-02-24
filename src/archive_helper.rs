@@ -1,14 +1,30 @@
+use std::path::PathBuf;
 use actix_http::header::HeaderMap;
 use autonomi::data::DataAddr;
 use autonomi::files::PublicArchive;
 use chrono::DateTime;
 use color_eyre::{Report, Result};
-use log::{debug};
+use log::{debug, info};
 use xor_name::XorName;
 
 #[derive(Clone)]
 pub struct ArchiveHelper {
     archive: PublicArchive
+}
+
+#[derive(Clone)]
+pub struct ArchiveInfo {
+    pub path_string: String,
+    pub resolved_xor_addr: XorName,
+    pub is_listing: bool,
+    pub has_moved_permanently: bool,
+    pub is_not_found: bool
+}
+
+impl ArchiveInfo {
+    pub fn new(path_string: String, resolved_xor_addr: XorName, is_listing: bool, has_moved_permanently: bool, is_not_found: bool) -> ArchiveInfo {
+        ArchiveInfo { path_string, resolved_xor_addr, is_listing, has_moved_permanently, is_not_found }
+    }
 }
 
 impl ArchiveHelper {
@@ -94,5 +110,38 @@ impl ArchiveHelper {
             }
         }
         (String::new(), XorName::default())
+    }
+
+    pub fn resolve_archive_info(&self, path_parts: Vec<String>, request_path: &str, resolved_relative_path_route: String, has_route_map: bool) -> ArchiveInfo {
+        if self.has_moved_permanently(request_path, &resolved_relative_path_route) {
+            debug!("has moved permanently");
+            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), true, true, false)
+        } else if has_route_map {
+            // retrieve route map index
+            debug!("retrieve route map index");
+            let (resolved_relative_path_route, resolved_xor_addr) = self.get_index(request_path.to_string(), resolved_relative_path_route);
+            ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, false, false, false)
+        } else if !resolved_relative_path_route.is_empty() {
+            // retrieve path and data address
+            debug!("retrieve path and data address");
+            match self.resolve_data_addr(path_parts.clone()) {
+                Ok(resolved_xor_addr) => {
+                    let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
+                    info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", resolved_xor_addr));
+                    ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, false, false, false)
+                }
+                Err(_err) => {
+                    ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), false, false, true)
+                }
+            }
+        } else {
+            // retrieve file listing
+            info!("retrieve file listing");
+            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), true, false, false)
+        }
+    }
+
+    fn has_moved_permanently(&self, request_path: &str, resolved_relative_path_route: &String) -> bool {
+        resolved_relative_path_route.is_empty() && request_path.to_string().chars().last() != Some('/')
     }
 }

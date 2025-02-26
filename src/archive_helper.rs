@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use actix_http::header::HeaderMap;
+use actix_web::HttpRequest;
 use autonomi::data::DataAddr;
 use autonomi::files::PublicArchive;
 use chrono::DateTime;
 use color_eyre::{Report, Result};
 use log::{debug, info};
 use xor_name::XorName;
+use crate::xor_helper::XorHelper;
 
 #[derive(Clone)]
 pub struct ArchiveHelper {
@@ -16,14 +18,23 @@ pub struct ArchiveHelper {
 pub struct ArchiveInfo {
     pub path_string: String,
     pub resolved_xor_addr: XorName,
-    pub is_listing: bool,
-    pub has_moved_permanently: bool,
-    pub is_not_found: bool
+    pub action: ArchiveAction,
+    pub state: DataState,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ArchiveAction {
+    Data, Listing, Redirect, NotFound
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum DataState {
+    Modified, NotModified
 }
 
 impl ArchiveInfo {
-    pub fn new(path_string: String, resolved_xor_addr: XorName, is_listing: bool, has_moved_permanently: bool, is_not_found: bool) -> ArchiveInfo {
-        ArchiveInfo { path_string, resolved_xor_addr, is_listing, has_moved_permanently, is_not_found }
+    pub fn new(path_string: String, resolved_xor_addr: XorName, action: ArchiveAction, state: DataState) -> ArchiveInfo {
+        ArchiveInfo { path_string, resolved_xor_addr, action, state }
     }
 }
 
@@ -112,15 +123,18 @@ impl ArchiveHelper {
         (String::new(), XorName::default())
     }
 
-    pub fn resolve_archive_info(&self, path_parts: Vec<String>, request_path: &str, resolved_relative_path_route: String, has_route_map: bool) -> ArchiveInfo {
+    pub fn resolve_archive_info(&self, path_parts: Vec<String>, request: HttpRequest, resolved_relative_path_route: String, has_route_map: bool) -> ArchiveInfo {
+        let request_path = request.path();
+        let xor_helper = XorHelper::new();
+        
         if self.has_moved_permanently(request_path, &resolved_relative_path_route) {
             debug!("has moved permanently");
-            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), true, true, false)
+            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), ArchiveAction::Redirect, DataState::Modified)
         } else if has_route_map {
             // retrieve route map index
             debug!("retrieve route map index");
             let (resolved_relative_path_route, resolved_xor_addr) = self.get_index(request_path.to_string(), resolved_relative_path_route);
-            ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, false, false, false)
+            ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, ArchiveAction::Data, xor_helper.get_data_state(request.headers(), resolved_xor_addr))
         } else if !resolved_relative_path_route.is_empty() {
             // retrieve path and data address
             debug!("retrieve path and data address");
@@ -128,16 +142,16 @@ impl ArchiveHelper {
                 Ok(resolved_xor_addr) => {
                     let path_buf = &PathBuf::from(resolved_relative_path_route.clone());
                     info!("Resolved path [{}], path_buf [{}] to xor address [{}]", resolved_relative_path_route, path_buf.display(), format!("{:x}", resolved_xor_addr));
-                    ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, false, false, false)
+                    ArchiveInfo::new(resolved_relative_path_route, resolved_xor_addr, ArchiveAction::Data, xor_helper.get_data_state(request.headers(), resolved_xor_addr))
                 }
                 Err(_err) => {
-                    ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), false, false, true)
+                    ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), ArchiveAction::NotFound, DataState::Modified)
                 }
             }
         } else {
             // retrieve file listing
             info!("retrieve file listing");
-            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), true, false, false)
+            ArchiveInfo::new(resolved_relative_path_route, DataAddr::default(), ArchiveAction::Listing, DataState::Modified)
         }
     }
 

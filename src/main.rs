@@ -3,19 +3,18 @@ mod anttp_config;
 mod caching_client;
 mod app_config;
 mod archive_helper;
+mod xor_helper;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, HttpRequest};
 use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use actix_files::Files;
 use xor_name::XorName;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::convert::TryInto;
 use ::autonomi::Client;
 use ::autonomi::client::data::{DataAddr};
-use ::autonomi::client::files::archive_public::PublicArchive;
 use ::autonomi::Network::ArbitrumSepolia;
 use actix_http::{header};
-use actix_http::header::{HeaderMap, IF_NONE_MATCH};
 use actix_web::dev::{ConnectionInfo};
 use actix_web::web::Data;
 use ant_evm::EvmWallet;
@@ -24,7 +23,8 @@ use awc::Client as AwcClient;
 use crate::autonomi::Autonomi;
 use crate::caching_client::CachingClient;
 use crate::anttp_config::AntTpConfig;
-use crate::archive_helper::ArchiveHelper;
+use crate::archive_helper::{ArchiveAction, ArchiveHelper, DataState};
+use crate::xor_helper::XorHelper;
 
 const DEFAULT_LOGGING: &'static str = "info,anttp=info,ant_api=warn,ant_client=warn,ant_networking=off,ant_bootstrap=error";
 
@@ -75,15 +75,16 @@ async fn get_public_data(
     info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
 
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
-    let (is_found, archive, is_archive, xor_addr) = resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
+    let xor_helper = XorHelper::new();
+    let (is_found, archive, is_archive, xor_addr) = xor_helper.resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
 
-    if !is_found {
-        HttpResponse::NotFound().body(format!("Failed to download [{:?}], [{:?}]", archive_addr, archive_file_name))
-    } else if !is_archive {
+    if !is_archive {
         info!("Retrieving file from XOR [{:x}]", xor_addr);
-        if !is_modified(request.headers(), xor_addr) {
+        if xor_helper.get_data_state(request.headers(), xor_addr) == DataState::NotModified {
             info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_addr));
             HttpResponse::NotModified().into()
+        } else if !is_found {
+            HttpResponse::NotFound().body(format!("File not found {:?}", conn.host()))
         } else {
             download_data_body(archive_addr, xor_addr, is_archive, autonomi_client).await
         }
@@ -98,22 +99,20 @@ async fn get_public_data(
 
                 // resolve file name to chunk address
                 let archive_helper = ArchiveHelper::new(archive.clone());
-                let archive_info = archive_helper.resolve_archive_info(path_parts, request.path(), resolved_relative_path_route.clone(), has_route_map);
+                let archive_info = archive_helper.resolve_archive_info(path_parts, request.clone(), resolved_relative_path_route.clone(), has_route_map);
 
-                let is_modified = is_modified(request.headers(), archive_info.resolved_xor_addr);
-
-                if archive_info.has_moved_permanently {
+                if archive_info.state == DataState::NotModified {
+                    info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_info.path_string, format!("{:x}", archive_info.resolved_xor_addr));
+                    HttpResponse::NotModified().into()
+                } else if archive_info.action == ArchiveAction::Redirect {
                     info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
                     HttpResponse::MovedPermanently()
                         .insert_header((header::LOCATION, request.path().to_string() + "/"))
                         .finish()
-                } else if archive_info.is_not_found {
+                } else if archive_info.action == ArchiveAction::NotFound {
                     warn!("Path not found {:?}", archive_info.path_string);
-                    HttpResponse::NotFound().body(format!("{:?}", archive_info.path_string))
-                } else if !is_modified {
-                    info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_info.path_string, format!("{:x}", archive_info.resolved_xor_addr));
-                    HttpResponse::NotModified().into()
-                } else if archive_info.is_listing {
+                    HttpResponse::NotFound().body(format!("File not found {:?}", archive_info.path_string))
+                } else if archive_info.action == ArchiveAction::Listing {
                     info!("List files in archive [{}]", archive_addr);
                     // todo: set header when js file
                     HttpResponse::Ok()
@@ -126,48 +125,9 @@ async fn get_public_data(
             },
             Err(err) => {
                 warn!("Failed to load config from map [{:?}]", err);
-                return HttpResponse::InternalServerError()
-                    .body(format!("Failed to load config from map [{:?}]", err))
+                HttpResponse::InternalServerError().body(format!("Failed to load config from map [{:?}]", err))
             },
         }
-    }
-}
-
-// todo: move to xor_helper?
-fn is_modified(headers: &HeaderMap, data_addr: XorName) -> bool {
-    if headers.contains_key(IF_NONE_MATCH) {
-        let e_tag = headers.get(IF_NONE_MATCH).unwrap().to_str().unwrap();
-        let source_e_tag = e_tag.to_string().replace("\"", "");
-        let target_e_tag = format!("{:x}", data_addr);
-        debug!("is_modified == [{}], source_e_tag = [{}], target_e_tag = [{}], IF_NONE_MATCH present", source_e_tag == target_e_tag, source_e_tag, target_e_tag);
-        source_e_tag != target_e_tag
-    } else {
-        debug!("is_modified == [true], IF_NONE_MATCH absent");
-        true
-    }
-}
-
-// todo: move to xor_helper?
-async fn resolve_archive_or_file(caching_autonomi_client: &CachingClient, archive_addr: &String, archive_file_name: &String) -> (bool, PublicArchive, bool, XorName) {
-    if is_xor(&archive_addr) {
-        let archive_addr_xorname = str_to_xor_name(&archive_addr).unwrap();
-        match caching_autonomi_client.archive_get_public(archive_addr_xorname).await {
-            Ok(public_archive) => {
-                info!("Found archive at [{:x}]", archive_addr_xorname);
-                (true, public_archive, true, archive_addr_xorname)
-            }
-            Err(_) => {
-                info!("No archive found at [{:x}]. Treating as XOR address", archive_addr_xorname);
-                (true, PublicArchive::new(), false, archive_addr_xorname)
-            }
-        }
-    } else if is_xor(&archive_file_name) {
-        let archive_file_name_xorname = str_to_xor_name(&archive_file_name).unwrap();
-        info!("Found XOR address [{:x}]", archive_file_name_xorname);
-        (true, PublicArchive::new(), false, archive_file_name_xorname)
-    } else {
-        warn!("Failed to find archive or filename [{:?}]", archive_file_name);
-        (false, PublicArchive::new(), false, XorName::default())
     }
 }
 

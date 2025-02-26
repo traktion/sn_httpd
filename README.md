@@ -37,6 +37,17 @@ AntTP was formally known as sn_httpd.
 
 ## Build Instructions
 
+### Dependencies
+On Ubuntu:
+
+Install Rust
+
+`sudo apt-get install rustup`
+
+Download latest stable release:
+
+`rustup default stable`
+
 ### Linux Target
 
 It is recommended that the MUSL target is used to prevent runtime dependency issues.

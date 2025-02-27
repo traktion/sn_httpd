@@ -4,26 +4,23 @@ mod caching_client;
 mod app_config;
 mod archive_helper;
 mod xor_helper;
+mod archive_client;
+mod file_client;
 
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger, HttpRequest};
-use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
+use actix_web::{web, App, HttpServer, Responder, middleware::Logger, HttpRequest};
 use actix_files::Files;
-use xor_name::XorName;
-use log::{info, warn};
-use std::convert::TryInto;
+use log::{info};
 use ::autonomi::Client;
-use ::autonomi::client::data::{DataAddr};
 use ::autonomi::Network::ArbitrumSepolia;
-use actix_http::{header};
 use actix_web::dev::{ConnectionInfo};
 use actix_web::web::Data;
 use ant_evm::EvmWallet;
-use color_eyre::{Result};
 use awc::Client as AwcClient;
 use crate::autonomi::Autonomi;
 use crate::caching_client::CachingClient;
 use crate::anttp_config::AntTpConfig;
-use crate::archive_helper::{ArchiveAction, ArchiveHelper, DataState};
+use crate::archive_client::ArchiveClient;
+use crate::file_client::FileClient;
 use crate::xor_helper::XorHelper;
 
 const DEFAULT_LOGGING: &'static str = "info,anttp=info,ant_api=warn,ant_client=warn,ant_networking=off,ant_bootstrap=error";
@@ -69,106 +66,21 @@ async fn get_public_data(
     conn: ConnectionInfo
 ) -> impl Responder {
     let path_parts = get_path_parts(&conn.host(), &path.into_inner());
-    let (archive_addr, archive_file_name) = assign_path_parts(path_parts.clone());
-    let autonomi_client = autonomi_client_data.get_ref().clone();
-
-    info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
-
-    let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let xor_helper = XorHelper::new();
+    let (archive_addr, archive_file_name) = xor_helper.assign_path_parts(path_parts.clone());
+
+    let autonomi_client = autonomi_client_data.get_ref().clone();
+    let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (is_found, archive, is_archive, xor_addr) = xor_helper.resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
+    let file_client = FileClient::new(autonomi_client.clone(), xor_helper.clone(), conn);
 
     if !is_archive {
         info!("Retrieving file from XOR [{:x}]", xor_addr);
-        if xor_helper.get_data_state(request.headers(), xor_addr) == DataState::NotModified {
-            info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_addr));
-            HttpResponse::NotModified().into()
-        } else if !is_found {
-            HttpResponse::NotFound().body(format!("File not found {:?}", conn.host()))
-        } else {
-            download_data_body(archive_addr, xor_addr, is_archive, autonomi_client).await
-        }
+        file_client.get_data(path_parts, request, xor_addr, is_found).await
     } else {
         info!("Retrieving file from archive [{:x}]", xor_addr);
-        // load app_config from archive and resolve route
-        match caching_autonomi_client.config_get_public(archive.clone(), xor_addr).await {
-            Ok(app_config) => {
-                // resolve route
-                let archive_relative_path = path_parts[1..].join("/").to_string();
-                let (resolved_relative_path_route, has_route_map) = app_config.resolve_route(archive_relative_path.clone(), archive_file_name.clone());
-
-                // resolve file name to chunk address
-                let archive_helper = ArchiveHelper::new(archive.clone());
-                let archive_info = archive_helper.resolve_archive_info(path_parts, request.clone(), resolved_relative_path_route.clone(), has_route_map);
-
-                if archive_info.state == DataState::NotModified {
-                    info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_info.path_string, format!("{:x}", archive_info.resolved_xor_addr));
-                    HttpResponse::NotModified().into()
-                } else if archive_info.action == ArchiveAction::Redirect {
-                    info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
-                    HttpResponse::MovedPermanently()
-                        .insert_header((header::LOCATION, request.path().to_string() + "/"))
-                        .finish()
-                } else if archive_info.action == ArchiveAction::NotFound {
-                    warn!("Path not found {:?}", archive_info.path_string);
-                    HttpResponse::NotFound().body(format!("File not found {:?}", archive_info.path_string))
-                } else if archive_info.action == ArchiveAction::Listing {
-                    info!("List files in archive [{}]", archive_addr);
-                    // todo: set header when js file
-                    HttpResponse::Ok()
-                        .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
-                        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
-                        .body(archive_helper.list_files(request.headers()))
-                } else {
-                    download_data_body(archive_relative_path, archive_info.resolved_xor_addr, is_archive, autonomi_client).await
-                }
-            },
-            Err(err) => {
-                warn!("Failed to load config from map [{:?}]", err);
-                HttpResponse::InternalServerError().body(format!("Failed to load config from map [{:?}]", err))
-            },
-        }
-    }
-}
-
-async fn download_data_body(
-    path_str: String,
-    xor_name: DataAddr,
-    is_resolved_file_name: bool,
-    autonomi_client: Client
-) -> HttpResponse {
-    info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
-    match autonomi_client.data_get_public(xor_name.as_ref()).await {
-        Ok(data) => {
-            info!("Read [{}] bytes of item [{}] at addr [{}]", data.len(), path_str, format!("{:x}", xor_name));
-            let cache_control_header = if !is_resolved_file_name && is_xor(&format!("{:x}", xor_name)) {
-                // immutable
-                CacheControl(vec![CacheDirective::MaxAge(31536000u32)])
-            } else {
-                // mutable
-                CacheControl(vec![CacheDirective::MaxAge(0u32)])
-            };
-            let etag_header = ETag(EntityTag::new_strong(format!("{:x}", xor_name).to_owned()));
-            let cors_allow_all = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-
-            if path_str.ends_with(".js") {
-                HttpResponse::Ok()
-                    .insert_header(cache_control_header)
-                    .insert_header(etag_header)
-                    .insert_header(cors_allow_all)
-                    .insert_header(get_content_type_from_filename(path_str)) // todo: why necessary?
-                    .body(data)
-            } else {
-                HttpResponse::Ok()
-                    .insert_header(cache_control_header)
-                    .insert_header(etag_header)
-                    .insert_header(cors_allow_all)
-                    .body(data)
-            }
-        }
-        Err(e) => {
-            HttpResponse::NotFound().body(format!("Failed to download [{:?}]", e))
-        }
+        let archive_client = ArchiveClient::new(caching_autonomi_client.clone(), file_client, xor_helper);
+        archive_client.get_data(archive, xor_addr, request, path_parts).await
     }
 }
 
@@ -208,6 +120,7 @@ async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Cl
 }*/
 
 fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
+    let xor_helper = XorHelper::new();
     // assert: subdomain.autonomi as acceptable format
     if hostname.ends_with(".autonomi") {
         let mut subdomain_parts = hostname.split(".")
@@ -219,7 +132,7 @@ fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
             .collect::<Vec<String>>();
         subdomain_parts.append(&mut path_parts.clone());
         subdomain_parts
-    } else if is_xor(&hostname.to_string()) {
+    } else if xor_helper.is_xor(&hostname.to_string()) {
         let mut subdomain_parts = Vec::new();
         subdomain_parts.push(hostname.to_string());
         let path_parts = path.split("/")
@@ -232,43 +145,5 @@ fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
             .map(str::to_string)
             .collect::<Vec<String>>();
         path_parts.clone()
-    }
-}
-
-fn assign_path_parts(path_parts: Vec<String>) -> (String, String) {
-    if path_parts.len() > 1 {
-        (path_parts[0].to_string(), path_parts[1].to_string())
-    } else if path_parts.len() > 0 {
-        (path_parts[0].to_string(), "".to_string())
-    } else {
-        ("".to_string(), "".to_string())
-    }
-}
-
-fn is_xor_len(chunk_address: &String) -> bool {
-    chunk_address.len() == 64
-}
-
-fn is_xor(chunk_address: &String) -> bool {
-    is_xor_len(chunk_address) && str_to_xor_name(chunk_address).is_ok()
-}
-
-fn str_to_xor_name(str: &String) -> Result<XorName> {
-    let bytes = hex::decode(str)?;
-    let xor_name_bytes: [u8; 32] = bytes
-        .try_into()
-        .expect("Failed to parse XorName from hex string");
-    Ok(XorName(xor_name_bytes))
-}
-
-fn get_content_type_from_filename(filename: String) -> ContentType {
-    if filename.ends_with(".js") {
-        ContentType(mime::APPLICATION_JAVASCRIPT)
-    } else if filename.ends_with(".html") {
-        ContentType(mime::TEXT_HTML)
-    } else if filename.ends_with(".css") {
-        ContentType(mime::TEXT_CSS)
-    } else {
-        ContentType(mime::TEXT_PLAIN)
     }
 }

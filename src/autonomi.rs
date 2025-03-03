@@ -15,8 +15,7 @@ impl Autonomi {
     //pub async fn init(&self) -> (Client, FilesApi) {
     pub async fn init(&self) -> Client {
         // initialise safe network connection and files api
-        let peers =  Self::get_peers(PeersArgs::default()).await.unwrap();
-        Client::init_with_peers(peers).await.expect("Failed to connect to Autonomi Network")
+        Client::init().await.expect("Failed to connect to Autonomi Network")
     }
 
     pub async fn get_peers(peers: PeersArgs) -> color_eyre::Result<Vec<Multiaddr>> {

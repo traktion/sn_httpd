@@ -9,6 +9,7 @@ edition = "2018"
 actix-files = "0.6.5"
 actix-http = "3"
 actix-web = "4"
+actix-multipart = "0.7.2"
 awc = "3"
 anyhow = "1.0.95"
 log = "0.4.21"
@@ -26,6 +27,9 @@ bytes = "1.8.0"
 globset = "0.4.15"
 mime = "0.3.17"
 chrono = "0.4.39"
+tempdir = "0.3.7"
+futures-util = "0.3.31"
+tokio = "1.43.0"
 
 #[patch.crates-io]
 #self_encryption = { path = "/home/paul/dev/self_encryption" }

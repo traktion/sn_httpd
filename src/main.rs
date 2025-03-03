@@ -11,9 +11,10 @@ use actix_web::{web, App, HttpServer, Responder, middleware::Logger, HttpRequest
 use actix_files::Files;
 use log::{info};
 use ::autonomi::Client;
-use ::autonomi::Network::ArbitrumSepolia;
+use actix_multipart::Multipart;
 use actix_web::dev::{ConnectionInfo};
 use actix_web::web::Data;
+use ant_evm::EvmNetwork::ArbitrumOne;
 use ant_evm::EvmWallet;
 use awc::Client as AwcClient;
 use crate::autonomi::Autonomi;
@@ -34,10 +35,15 @@ async fn main() -> std::io::Result<()> {
 
     let app_config = AntTpConfig::read_args().expect("Failed to read CLI arguments");
     let bind_socket_addr = app_config.bind_socket_addr;
+    let wallet_private_key = app_config.wallet_private_key.clone();
 
     // initialise safe network connection and files api
     let autonomi_client = Autonomi::new().init().await;
-    let evm_wallet = EvmWallet::new_with_random_wallet(ArbitrumSepolia);
+    let evm_wallet = if !wallet_private_key.is_empty() {
+        EvmWallet::new_from_private_key(ArbitrumOne, wallet_private_key.as_str()).expect("Failed to instantiate EvmWallet.")
+    } else {
+        EvmWallet::new_with_random_wallet(ArbitrumOne)
+    };
 
     info!("Starting listener");
 
@@ -47,7 +53,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(logger)
             .service(Files::new("/static", app_config.static_dir.clone()))
-            //.route("/", web::post().to(post_safe_data))
+            .route("/api/v1/archive", web::post().to(post_public_archive))
             .route("/{path:.*}", web::get().to(get_public_data))
             .app_data(Data::new(app_config.clone()))
             .app_data(Data::new(autonomi_client.clone()))
@@ -57,6 +63,24 @@ async fn main() -> std::io::Result<()> {
         .bind(bind_socket_addr)?
         .run()
         .await
+}
+
+async fn post_public_archive(
+    payload: Multipart,
+    autonomi_client_data: Data<Client>,
+    evm_wallet_data: Data<EvmWallet>,
+    conn: ConnectionInfo)
+-> impl Responder {
+    let autonomi_client = autonomi_client_data.get_ref().clone();
+    let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
+    let evm_wallet = evm_wallet_data.get_ref().clone();
+    let xor_helper = XorHelper::new();
+    let file_client = FileClient::new(autonomi_client.clone(), xor_helper.clone(), conn);
+
+    let archive_client = ArchiveClient::new(autonomi_client, caching_autonomi_client, file_client, xor_helper.clone());
+
+    info!("Creating new archive from multipart POST");
+    archive_client.post_data(payload, evm_wallet).await
 }
 
 async fn get_public_data(
@@ -79,45 +103,10 @@ async fn get_public_data(
         file_client.get_data(path_parts, request, xor_addr, is_found).await
     } else {
         info!("Retrieving file from archive [{:x}]", xor_addr);
-        let archive_client = ArchiveClient::new(caching_autonomi_client.clone(), file_client, xor_helper);
+        let archive_client = ArchiveClient::new(autonomi_client, caching_autonomi_client.clone(), file_client, xor_helper);
         archive_client.get_data(archive, xor_addr, request, path_parts).await
     }
 }
-
-/*
-// experimental file uploads
-async fn post_safe_data(mut payload: web::Payload, autonomi_client_data: Data<Client>, evm_wallet_data: Data<EvmWallet>) -> Result<HttpResponse, Error> {
-    info!("Post file");
-    let autonomi_client = autonomi_client_data.get_ref().clone();
-    let evm_wallet = evm_wallet_data.get_ref().clone();
-
-    info!("Creating temp file");
-    let temp_dir = tempdir()?;
-    let file_path = temp_dir.path().join("tempfile");
-    let mut file = File::create(&file_path)?;
-
-    info!("Writing temp file");
-    // todo: can we write directly to safe net from memory?
-    // Field in turn is stream of *Bytes* object
-    while let Some(chunk) = payload.next().await {
-        let data = chunk.unwrap();
-        // filesystem operations are blocking, we have to use threadpool
-        file = web::block(move || file.write_all(&data).map(|_| file))
-            .await
-            .unwrap()?;
-    }
-
-    info!("Creating chunk path");
-    let chunk_path = temp_dir.path().join("chunk_path");
-    create_dir_all(chunk_path.clone())?;
-
-    info!("Uploading chunks");
-    let data_addr = autonomi_client.data_put(Bytes::from(fs::read(chunk_path)?), evm_wallet_data.get_ref()).await.unwrap();
-
-    info!("Successfully uploaded data at [{}]", data_addr);
-    Ok(HttpResponse::Ok()
-        .body(data_addr.to_string()))
-}*/
 
 fn get_path_parts(hostname: &str, path: &str) -> Vec<String> {
     let xor_helper = XorHelper::new();

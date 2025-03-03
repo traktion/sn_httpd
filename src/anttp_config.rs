@@ -6,7 +6,8 @@ use log::info;
 #[derive(Clone)]
 pub struct AntTpConfig {
     pub bind_socket_addr: SocketAddr,
-    pub static_dir: String
+    pub static_dir: String,
+    pub wallet_private_key: String,
 }
 
 impl AntTpConfig {
@@ -26,9 +27,13 @@ impl AntTpConfig {
         let static_dir = args_received.next().unwrap_or_else(|| "static".to_string());
         info!("Static file directory: [{}]", static_dir);
 
+        let wallet_private_key = args_received.next().unwrap_or_else(|| "".to_string());
+        info!("Wallet private key: [*****]");
+
         Ok(AntTpConfig {
             bind_socket_addr,
-            static_dir
+            static_dir,
+            wallet_private_key,
         })
     }
 }

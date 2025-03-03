@@ -3,7 +3,7 @@ use actix_web::{HttpRequest, HttpResponse};
 use actix_web::dev::ConnectionInfo;
 use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use autonomi::Client;
-use autonomi::data::DataAddr;
+use autonomi::data::DataAddress;
 use log::info;
 use xor_name::XorName;
 use crate::archive_helper::DataState;
@@ -20,28 +20,29 @@ impl FileClient {
         FileClient { autonomi_client, xor_helper, conn }
     }
 
-    pub async fn get_data(&self, path_parts: Vec<String>, request: HttpRequest, xor_addr: XorName, is_found: bool) -> HttpResponse {
+    pub async fn get_data(&self, path_parts: Vec<String>, request: HttpRequest, xor_name: XorName, is_found: bool) -> HttpResponse {
         let (archive_addr, _) = self.xor_helper.assign_path_parts(path_parts.clone());
         info!("archive_addr [{}]", archive_addr);
-        
-        if self.xor_helper.get_data_state(request.headers(), xor_addr) == DataState::NotModified {
-            info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_addr));
+
+        if self.xor_helper.get_data_state(request.headers(), &xor_name) == DataState::NotModified {
+            info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_name).as_str());
             HttpResponse::NotModified().into()
         } else if !is_found {
             HttpResponse::NotFound().body(format!("File not found {:?}", self.conn.host()))
         } else {
-            self.download_data_body(archive_addr, xor_addr, false).await
+            self.download_data_body(archive_addr, xor_name, false).await
         }
     }
 
     pub async fn download_data_body(
         &self,
         path_str: String,
-        xor_name: DataAddr,
+        xor_name: XorName,
         is_resolved_file_name: bool
     ) -> HttpResponse {
         info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
-        match self.autonomi_client.data_get_public(xor_name.as_ref()).await {
+        let data_address =  DataAddress::new(xor_name);
+        match self.autonomi_client.data_get_public(&data_address).await {
             Ok(data) => {
                 info!("Read [{}] bytes of item [{}] at addr [{}]", data.len(), path_str, format!("{:x}", xor_name));
                 let cache_control_header = self.build_cache_control_header(&xor_name, is_resolved_file_name);
@@ -69,7 +70,7 @@ impl FileClient {
         }
     }
 
-    fn build_cache_control_header(&self, xor_name: &DataAddr, is_resolved_file_name: bool) -> CacheControl {
+    fn build_cache_control_header(&self, xor_name: &XorName, is_resolved_file_name: bool) -> CacheControl {
         if !is_resolved_file_name && self.xor_helper.is_xor(&format!("{:x}", xor_name)) {
             CacheControl(vec![CacheDirective::MaxAge(31536000u32)]) // immutable
         } else {

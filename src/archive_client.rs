@@ -5,6 +5,7 @@ use actix_multipart::Multipart;
 use actix_web::http::header::{ETag, EntityTag};
 use actix_web::{HttpRequest, HttpResponse};
 use autonomi::{Client, Wallet};
+use autonomi::client::payment::PaymentOption;
 use autonomi::files::PublicArchive;
 use log::{info, warn};
 use xor_name::XorName;
@@ -92,7 +93,7 @@ impl ArchiveClient {
 
         info!("Uploading chunks");
         let (cost, archive_address) = self.autonomi_client
-            .dir_and_archive_upload_public(tmp_dir.into_path(), &evm_wallet)
+            .dir_upload_public(tmp_dir.into_path(), PaymentOption::Wallet(evm_wallet))
             .await
             .expect("Failed to upload archive");
         info!("Uploaded directory to network for: {}", cost);

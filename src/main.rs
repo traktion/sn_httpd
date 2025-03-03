@@ -1,4 +1,3 @@
-mod autonomi;
 mod anttp_config;
 mod caching_client;
 mod app_config;
@@ -17,7 +16,6 @@ use actix_web::web::Data;
 use ant_evm::EvmNetwork::ArbitrumOne;
 use ant_evm::EvmWallet;
 use awc::Client as AwcClient;
-use crate::autonomi::Autonomi;
 use crate::caching_client::CachingClient;
 use crate::anttp_config::AntTpConfig;
 use crate::archive_client::ArchiveClient;
@@ -38,7 +36,7 @@ async fn main() -> std::io::Result<()> {
     let wallet_private_key = app_config.wallet_private_key.clone();
 
     // initialise safe network connection and files api
-    let autonomi_client = Autonomi::new().init().await;
+    let autonomi_client = Client::init().await.expect("Failed to connect to Autonomi Network");
     let evm_wallet = if !wallet_private_key.is_empty() {
         EvmWallet::new_from_private_key(ArbitrumOne, wallet_private_key.as_str()).expect("Failed to instantiate EvmWallet.")
     } else {
@@ -97,7 +95,7 @@ async fn get_public_data(
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (is_found, archive, is_archive, xor_addr) = xor_helper.resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
     let file_client = FileClient::new(autonomi_client.clone(), xor_helper.clone(), conn);
-
+    
     if !is_archive {
         info!("Retrieving file from XOR [{:x}]", xor_addr);
         file_client.get_data(path_parts, request, xor_addr, is_found).await

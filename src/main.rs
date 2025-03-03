@@ -95,7 +95,7 @@ async fn get_public_data(
     let caching_autonomi_client = CachingClient::new(autonomi_client.clone());
     let (is_found, archive, is_archive, xor_addr) = xor_helper.resolve_archive_or_file(&caching_autonomi_client, &archive_addr, &archive_file_name).await;
     let file_client = FileClient::new(autonomi_client.clone(), xor_helper.clone(), conn);
-    
+
     if !is_archive {
         info!("Retrieving file from XOR [{:x}]", xor_addr);
         file_client.get_data(path_parts, request, xor_addr, is_found).await

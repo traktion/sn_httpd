@@ -1,5 +1,5 @@
 use actix_http::header;
-use actix_web::{HttpRequest, HttpResponse};
+use actix_web::{Error, HttpRequest, HttpResponse};
 use actix_web::dev::ConnectionInfo;
 use actix_web::http::header::{CacheControl, CacheDirective, ContentType, ETag, EntityTag};
 use autonomi::Client;
@@ -20,15 +20,15 @@ impl FileClient {
         FileClient { autonomi_client, xor_helper, conn }
     }
 
-    pub async fn get_data(&self, path_parts: Vec<String>, request: HttpRequest, xor_name: XorName, is_found: bool) -> HttpResponse {
+    pub async fn get_data(&self, path_parts: Vec<String>, request: HttpRequest, xor_name: XorName, is_found: bool) -> Result<HttpResponse, Error> {
         let (archive_addr, _) = self.xor_helper.assign_path_parts(path_parts.clone());
         info!("archive_addr [{}]", archive_addr);
 
         if self.xor_helper.get_data_state(request.headers(), &xor_name) == DataState::NotModified {
             info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_addr, format!("{:x}", xor_name).as_str());
-            HttpResponse::NotModified().into()
+            Ok(HttpResponse::NotModified().into())
         } else if !is_found {
-            HttpResponse::NotFound().body(format!("File not found {:?}", self.conn.host()))
+            Ok(HttpResponse::NotFound().body(format!("File not found {:?}", self.conn.host())))
         } else {
             self.download_data_body(archive_addr, xor_name, false).await
         }
@@ -39,7 +39,7 @@ impl FileClient {
         path_str: String,
         xor_name: XorName,
         is_resolved_file_name: bool
-    ) -> HttpResponse {
+    ) -> Result<HttpResponse, Error> {
         info!("Downloading item [{}] at addr [{}] ", path_str, format!("{:x}", xor_name));
         let data_address =  DataAddress::new(xor_name);
         match self.autonomi_client.data_get_public(&data_address).await {
@@ -50,22 +50,22 @@ impl FileClient {
                 let cors_allow_all = (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
 
                 if path_str.ends_with(".js") {
-                    HttpResponse::Ok()
+                    Ok(HttpResponse::Ok()
                         .insert_header(cache_control_header)
                         .insert_header(etag_header)
                         .insert_header(cors_allow_all)
                         .insert_header(self.get_content_type_from_filename(path_str)) // todo: why necessary?
-                        .body(data)
+                        .body(data))
                 } else {
-                    HttpResponse::Ok()
+                    Ok(HttpResponse::Ok()
                         .insert_header(cache_control_header)
                         .insert_header(etag_header)
                         .insert_header(cors_allow_all)
-                        .body(data)
+                        .body(data))
                 }
             }
             Err(e) => {
-                HttpResponse::InternalServerError().body(format!("Failed to download [{:?}]", e))
+                Ok(HttpResponse::InternalServerError().body(format!("Failed to download [{:?}]", e)))
             }
         }
     }

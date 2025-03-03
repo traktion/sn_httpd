@@ -3,7 +3,7 @@ use std::fs::File;
 use actix_http::header;
 use actix_multipart::Multipart;
 use actix_web::http::header::{ETag, EntityTag};
-use actix_web::{HttpRequest, HttpResponse};
+use actix_web::{Error, HttpRequest, HttpResponse};
 use autonomi::{Client, Wallet};
 use autonomi::client::payment::PaymentOption;
 use autonomi::files::PublicArchive;
@@ -29,7 +29,7 @@ impl ArchiveClient {
         ArchiveClient { autonomi_client, caching_autonomi_client, file_client, xor_helper }
     }
     
-    pub async fn get_data(&self, archive: PublicArchive, xor_addr: XorName, request: HttpRequest, path_parts: Vec<String>) -> HttpResponse {
+    pub async fn get_data(&self, archive: PublicArchive, xor_addr: XorName, request: HttpRequest, path_parts: Vec<String>) -> Result<HttpResponse, Error> {
         let (archive_addr, archive_file_name) = self.xor_helper.assign_path_parts(path_parts.clone());
         info!("archive_addr [{}], archive_file_name [{}]", archive_addr, archive_file_name);
         
@@ -46,48 +46,47 @@ impl ArchiveClient {
 
                 if archive_info.state == DataState::NotModified {
                     info!("ETag matches for path [{}] at address [{}]. Client can use cached version", archive_info.path_string, format!("{:x}", archive_info.resolved_xor_addr));
-                    HttpResponse::NotModified().into()
+                    Ok(HttpResponse::NotModified().into())
                 } else if archive_info.action == ArchiveAction::Redirect {
                     info!("Redirect to archive directory [{}]", request.path().to_string() + "/");
-                    HttpResponse::MovedPermanently()
+                    Ok(HttpResponse::MovedPermanently()
                         .insert_header((header::LOCATION, request.path().to_string() + "/"))
-                        .finish()
+                        .finish())
                 } else if archive_info.action == ArchiveAction::NotFound {
                     warn!("Path not found {:?}", archive_info.path_string);
-                    HttpResponse::NotFound().body(format!("File not found {:?}", archive_info.path_string))
+                    Ok(HttpResponse::NotFound().body(format!("File not found {:?}", archive_info.path_string)))
                 } else if archive_info.action == ArchiveAction::Listing {
                     info!("List files in archive [{}]", archive_addr);
                     // todo: set header when js file
-                    HttpResponse::Ok()
+                    Ok(HttpResponse::Ok()
                         .insert_header(ETag(EntityTag::new_strong(format!("{:x}", xor_addr).to_owned())))
                         .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
-                        .body(archive_helper.list_files(request.headers()))
+                        .body(archive_helper.list_files(request.headers())))
                 } else {
                     self.file_client.download_data_body(archive_relative_path, archive_info.resolved_xor_addr, true).await
                 }
             },
             Err(err) => {
                 warn!("Failed to load config from map [{:?}]", err);
-                HttpResponse::InternalServerError().body(format!("Failed to load config from map [{:?}]", err))
+                Ok(HttpResponse::InternalServerError().body(format!("Failed to load config from map [{:?}]", err)))
             },
         }
     }
 
-    pub async fn post_data(&self, mut payload: Multipart, evm_wallet: Wallet) -> HttpResponse {
-        // todo: convert expect() failures to internal server error responses
-        let tmp_dir = TempDir::new("anttp").expect("Failed to resolve temp dir");
+    pub async fn post_data(&self, mut payload: Multipart, evm_wallet: Wallet) -> Result<HttpResponse, Error> {
+        let tmp_dir = TempDir::new("anttp")?;
         info!("Creating temporary directory for archive with prefix: {:?}", tmp_dir.path().to_str());
 
         while let Some(item) = payload.next().await {
-            let mut field = item.expect("Failed to get field from payload");
+            let mut field = item?;
 
             let filename = field.content_disposition().unwrap().get_filename().expect("Failed to get filename from multipart field");
             let file_path = tmp_dir.path().join(filename);
             info!("Creating temporary file for archive: {:?}", file_path.to_str().unwrap());
-            let mut tmp_file = File::create(file_path).expect("Failed to create temp file");
+            let mut tmp_file = File::create(file_path)?;
 
             while let Some(chunk) = field.next().await {
-                tmp_file.write_all(&chunk.expect("Failed to get chunk from multipart field")).expect("Failed to write chunk to temp file");
+                tmp_file.write_all(&chunk?)?;
             }
         }
 
@@ -106,6 +105,6 @@ impl ArchiveClient {
         //tmp_dir.close().expect("Failed to close temp dir");
 
         info!("Successfully uploaded data at [{:?}]", archive_address);
-        HttpResponse::Ok().body(format!("{:?}", archive_address))
+        Ok(HttpResponse::Ok().body(format!("{:?}", archive_address)))
     }
 }

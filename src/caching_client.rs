@@ -77,6 +77,9 @@ impl CachingClient {
         }
     }
 
+    // todo: color_eyre needed?
+    // todo: non-clashing name for AppConfig?
+    // todo: fix funky error handling
     pub async fn config_get_public(&self, archive: PublicArchive, archive_address_xorname: XorName) -> color_eyre::Result<crate::app_config::AppConfig> {
         let path_str = "app-conf.json";
         let mut path_parts = Vec::<String>::new();
